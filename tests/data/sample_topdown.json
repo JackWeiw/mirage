@@ -1,0 +1,33 @@
+{
+  "topdown_l1": {
+    "frontend_bound": 0.25,
+    "backend_bound": 0.40,
+    "bad_speculation": 0.10,
+    "retiring": 0.25
+  },
+  "topdown_l2": {
+    "frontend_bound": {
+      "branch_detect": 0.05,
+      "fetch_latency": 0.15,
+      "icache_misses": 0.05
+    },
+    "backend_bound": {
+      "memory_bound": 0.30,
+      "core_bound": 0.10
+    },
+    "bad_speculation": {
+      "branch_mispredict": 0.08,
+      "other": 0.02
+    },
+    "retiring": {
+      "heavy_ops": 0.15,
+      "light_ops": 0.10
+    }
+  },
+  "memory": {
+    "bandwidth_gbps": 45.2,
+    "l3_miss_rate": 0.08,
+    "tlb_miss_rate": 0.02,
+    "working_set_size_mb": 512
+  }
+}
