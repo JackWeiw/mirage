@@ -1,0 +1,40 @@
+{
+  "metadata": {
+    "customer": "workload_sim",
+    "date": "2026-07-28",
+    "platform": "arm64",
+    "neoverse_core": "N2",
+    "software_stack": [
+      {"name": "folly", "version": "2.1.0", "compile_flags": "-O2 -march=armv8.2-a"}
+    ]
+  },
+  "hotspots": [
+    {
+      "function": "folly::futures::detail::FutureImpl::then",
+      "library": "folly",
+      "source": "open_source",
+      "self_pct": 11.0,
+      "cumulative_pct": 33.0,
+      "call_path": ["main", "Server::handleRequest", "AsyncProcessor::process", "folly::futures::detail::FutureImpl::then"]
+    },
+    {
+      "function": "folly::detail::ThreadPool::dispatch",
+      "library": "folly",
+      "source": "open_source",
+      "self_pct": 3.0,
+      "cumulative_pct": 8.0,
+      "call_path": ["main", "Logger::flush", "folly::detail::ThreadPool::dispatch"]
+    }
+  ],
+  "topdown": {
+    "frontend_bound": 0.22,
+    "backend_bound": 0.38,
+    "bad_speculation": 0.11,
+    "retiring": 0.29
+  },
+  "memory": {
+    "bandwidth_gbps": 43.8,
+    "l3_miss_rate": 0.07
+  },
+  "business_logic": "Simulated workload"
+}
