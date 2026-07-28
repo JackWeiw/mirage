@@ -32,4 +32,4 @@ jobs:
         run: mypy src/ --strict --config-file=pyproject.toml
 
       - name: Run tests
-        run: pytest tests/ -v -k "not integration"
+        run: pytest tests/ -v -k "not integration" --cov=src --cov-report=term-missing
