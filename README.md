@@ -1,22 +1,24 @@
-# Workload Simulation Framework
+# Mirage
 
-Generate synthetic C++ workloads that mimic the microarchitectural behavior (Topdown, memory bandwidth, hotspot call paths) of customer real-world software on ARM64 platforms.
+**Synthetic workload simulation that mirrors customer real-software microarchitectural behavior on ARM64.**
+
+Mirage generates C++ workloads that replicate the Topdown, memory bandwidth, and hotspot call-path characteristics of customer proprietary software — using open-source library calls where possible and behavior synthesis where not. Like a desert mirage, the output mirrors the real city's shape, but it's constructed from different materials.
 
 ## Quick Start
 
 ```bash
 pip install -e ".[dev]"
-pytest tests/ -v --no-cov  # run all tests (skip coverage threshold for initial run)
-pre-commit install          # install pre-commit hooks
+pytest tests/ -v --no-cov
+pre-commit install
 ```
 
 ## Architecture
 
 Five core components + cross-cutting infrastructure:
 
-1. **Data Ingestion** — Parse flamegraph, Topdown, memory data -> structured Profile (config-driven classifier)
+1. **Data Ingestion** — Parse flamegraph, Topdown, memory data → structured Profile (config-driven classifier)
 2. **Profile Store** — Save/load Profiles as JSON
-3. **Agent Core** — LLM prompt chain: analyze -> plan -> generate instruction (OPTIONAL — pipeline works without it)
+3. **Agent Core** — LLM prompt chain: analyze → plan → generate instruction (OPTIONAL — pipeline works without it)
 4. **Code Gen Engine** — Generate C++ workload + config (strategy registry pattern — open-closed)
 5. **Harness** — Build, run, collect, compare
 
@@ -28,7 +30,7 @@ Cross-cutting:
 
 ## Phase 1 Status
 
-End-to-end loop works: ingest -> agent -> generate -> build -> (manual run/collect/compare).
+End-to-end loop works: ingest → agent → generate → build → (manual run/collect/compare).
 No auto-iteration yet (Phase 2). Agent is optional — works in local-only mode with manual instruction.
 
 ## Usage
@@ -73,36 +75,15 @@ instruction = {
 project_dir = pipeline.generate_workload(profile, instruction=instruction)
 ```
 
-### Individual pipeline steps
-
-```python
-pipeline = Pipeline(output_base_dir="./output", agent=no_agent)
-
-# Step 1: Ingest
-profile = pipeline.ingest_customer_data(flamegraph_path=..., topdown_path=...)
-
-# Step 2: Generate (with manual instruction)
-project_dir = pipeline.generate_workload(profile, instruction=instruction)
-
-# Step 3: Build
-binary_path = pipeline.build_workload(project_dir)
-
-# Step 4: Run (requires actual ARM64 hardware)
-result = pipeline.run_workload(binary_path)
-
-# Step 5: Compare (after collecting workload metrics)
-report = pipeline.compare_results(customer_profile, workload_profile)
-```
-
 ## Quality Gates
 
 - **pre-commit**: ruff (lint + format), mypy (strict), basic checks
-- **pytest**: coverage threshold >= 60%
-- **mypy**: strict mode with pydantic plugin
+- **pytest**: 87% coverage (104 tests passing)
+- **mypy**: strict mode with pydantic plugin — 37 source files, zero errors
 
 Run all checks: `pre-commit run --all-files`
 
-## Design Doc
+## Design Docs
 
-See `docs/superpowers/specs/2026-07-27-workload-simulation-design.md` for the full design specification.
-See `docs/superpowers/plans/2026-07-27-workload-simulation-phase1-revised.md` for the implementation plan.
+- [Design Spec](docs/superpowers/specs/2026-07-27-workload-simulation-design.md)
+- [Implementation Plan](docs/superpowers/plans/2026-07-27-workload-simulation-phase1-revised.md)

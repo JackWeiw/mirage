@@ -1,7 +1,7 @@
 [project]
-name = "workload-sim"
+name = "mirage"
 version = "0.1.0"
-description = "Workload simulation framework for ARM64 microarchitecture profiling"
+description = "Mirage — synthetic workload simulation that mirrors customer real-software microarchitectural behavior on ARM64"
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.0",
@@ -41,7 +41,7 @@ select = [
 ignore = ["E501"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["ingestion", "profile", "agent", "codegen", "harness", "config", "observability", "models"]
+known-first-party = ["mirage", "ingestion", "profile", "agent", "codegen", "harness", "config", "observability", "models"]
 
 [tool.mypy]
 python_version = "3.11"
