@@ -1,0 +1,27 @@
+#pragma once
+#include <string>
+#include <nlohmann/json.hpp>
+#include <fstream>
+
+struct RunConfig {
+    int thread_count;
+    int qps;
+    int warmup_seconds;
+    int measurement_seconds;
+    double compute_ratio;
+    double memory_ratio;
+};
+
+inline RunConfig load_config(const std::string& config_path) {
+    std::ifstream file(config_path);
+    nlohmann::json j = nlohmann::json::parse(file);
+
+    RunConfig cfg;
+    cfg.thread_count = j.value("thread_count", {{ config.thread_count | default(4) }});
+    cfg.qps = j.value("qps", {{ config.qps | default(100) }});
+    cfg.warmup_seconds = j.value("warmup_seconds", {{ config.warmup_seconds | default(30) }});
+    cfg.measurement_seconds = j.value("measurement_seconds", {{ config.measurement_seconds | default(60) }});
+    cfg.compute_ratio = j.value("compute_ratio", {{ config.compute_ratio | default(0.5) }});
+    cfg.memory_ratio = j.value("memory_ratio", {{ config.memory_ratio | default(0.5) }});
+    return cfg;
+}

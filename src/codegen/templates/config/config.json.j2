@@ -1,0 +1,9 @@
+{
+  "thread_count": {{ config.thread_count | default(4) }},
+  "qps": {{ config.qps | default(100) }},
+  "warmup_seconds": {{ config.warmup_seconds | default(30) }},
+  "measurement_seconds": {{ config.measurement_seconds | default(60) }},
+  "compute_ratio": {{ config.compute_ratio | default(0.5) }},
+  "memory_ratio": {{ config.memory_ratio | default(0.5) }},
+  "ramp_up_seconds": {{ config.ramp_up_seconds | default(10) }}
+}

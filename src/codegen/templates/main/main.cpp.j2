@@ -1,0 +1,56 @@
+#include <iostream>
+#include <chrono>
+#include <thread>
+#include "config_loader.h"
+
+{% for dep_header in dep_headers %}
+#include <{{ dep_header }}>
+{% endfor %}
+
+// Behavior stage implementations
+{% for stage in stages %}
+{{ stage.include_statement }}
+{% endfor %}
+
+int main(int argc, char* argv[]) {
+    std::string config_path = "config.json";
+    if (argc > 1) config_path = argv[1];
+
+    RunConfig cfg = load_config(config_path);
+    std::cout << "Workload: {{ project_name }}" << std::endl;
+    std::cout << "Config: threads=" << cfg.thread_count
+              << " qps=" << cfg.qps << std::endl;
+
+    // Warmup phase
+    std::cout << "Warmup for " << cfg.warmup_seconds << "s..." << std::endl;
+    auto warmup_end = std::chrono::steady_clock::now() +
+        std::chrono::seconds(cfg.warmup_seconds);
+
+    {% for stage in stages %}
+    {{ stage.warmup_call }}
+    {% endfor %}
+
+    while (std::chrono::steady_clock::now() < warmup_end) {
+        {% for stage in stages %}
+        {{ stage.loop_call }}
+        {% endfor %}
+    }
+
+    // Measurement phase
+    std::cout << "Measurement for " << cfg.measurement_seconds << "s..." << std::endl;
+    auto measure_end = std::chrono::steady_clock::now() +
+        std::chrono::seconds(cfg.measurement_seconds);
+
+    {% for stage in stages %}
+    {{ stage.measure_call }}
+    {% endfor %}
+
+    while (std::chrono::steady_clock::now() < measure_end) {
+        {% for stage in stages %}
+        {{ stage.loop_call }}
+        {% endfor %}
+    }
+
+    std::cout << "Workload completed." << std::endl;
+    return 0;
+}

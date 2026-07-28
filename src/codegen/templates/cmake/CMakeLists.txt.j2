@@ -1,0 +1,27 @@
+cmake_minimum_required(VERSION 3.16)
+project({{ project_name }} LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Compile flags aligned with customer
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} {{ compile_flags }}")
+
+# Dependencies
+{% for dep in dependencies %}
+find_package({{ dep.name }} {{ dep.version }} REQUIRED)
+{% endfor %}
+
+# Source files
+add_executable({{ project_name }}
+    main.cpp
+    {% for src in extra_sources %}
+    {{ src }}
+    {% endfor %}
+)
+
+target_link_libraries({{ project_name }}
+    {% for dep in dependencies %}
+    {{ dep.name }}
+    {% endfor %}
+)
