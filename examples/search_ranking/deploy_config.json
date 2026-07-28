@@ -1,0 +1,12 @@
+{
+  "deploy_config": {
+    "target_host": "192.168.1.100",
+    "target_arch": "arm64",
+    "dependencies": [
+      {"name": "folly", "version": "2.1.0"},
+      {"name": "taskflow", "version": "3.7.0"}
+    ],
+    "deploy_script": "deploy/search_ranking_deploy.sh",
+    "env_vars": {}
+  }
+}

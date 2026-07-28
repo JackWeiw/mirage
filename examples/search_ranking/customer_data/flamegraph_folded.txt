@@ -1,0 +1,10 @@
+main;SearchService::process;FeatureExtractor::extract;folly::futures::detail::FutureImpl::then 2500
+main;SearchService::process;FeatureExtractor::extract;CustomerCustom::hashFeature 1800
+main;SearchService::process;ModelInferencer::infer;tf::ParallelFor::dispatch 3200
+main;SearchService::process;ModelInferencer::infer;CustomerCustom::matmulCompute 2800
+main;SearchService::process;Ranker::rankMerge;CustomerCustom::mergeAndSort 1500
+main;SearchService::process;Ranker::rankMerge;folly::sorted_vector_map::find 600
+main;SearchService::process;DedupFilter::filter;CustomerCustom::branchFilter 900
+main;SearchService::process;ResultAssembler::assemble 400
+main;SearchService::process 300
+main 200
