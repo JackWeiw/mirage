@@ -54,7 +54,7 @@ mypy_path = ["src"]
 explicit_package_bases = true
 
 [[tool.mypy.overrides]]
-module = "pytest"
+module = "yaml"
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
