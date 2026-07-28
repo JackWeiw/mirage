@@ -1,0 +1,8 @@
+main;Server::handleRequest;AsyncProcessor::process;folly::futures::detail::FutureImpl::then 1250
+main;Server::handleRequest;AsyncProcessor::process;CustomerCustom::featureCalc 800
+main;Server::handleRequest;CustomerCustom::dataLookup 1500
+main;Server::handleRequest;AsyncProcessor::process 500
+main;Server::handleRequest 300
+main 200
+main;Logger::flush;folly::detail::ThreadPool::dispatch 600
+main;Logger::flush 100

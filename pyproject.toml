@@ -54,6 +54,10 @@ mypy_path = ["src"]
 explicit_package_bases = true
 
 [[tool.mypy.overrides]]
+module = "pytest"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
 module = "anthropic.*"
 ignore_missing_imports = true
 
