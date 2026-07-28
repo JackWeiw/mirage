@@ -8,34 +8,46 @@ Mirage generates C++ workloads that replicate the Topdown, memory bandwidth, and
 
 ```bash
 pip install -e ".[dev]"
+export ANTHROPIC_API_KEY=your-key-here
 pytest tests/ -v --no-cov
 pre-commit install
 ```
 
 ## Architecture
 
-Five core components + cross-cutting infrastructure:
+Agent-driven framework: the LLM brain orchestrates the entire pipeline.
+
+**Core loop:**
+
+```text
+Customer data → Agent analyzes → Agent plans workflow → Agent fills details
+→ Code Gen generates C++ workload → Harness builds/runs/collects
+→ Comparator measures alignment → Agent evaluates → Agent decides iteration
+→ repeat until converged
+```
+
+**Five components:**
 
 1. **Data Ingestion** — Parse flamegraph, Topdown, memory data → structured Profile (config-driven classifier)
-2. **Profile Store** — Save/load Profiles as JSON
-3. **Agent Core** — LLM prompt chain: analyze → plan → generate instruction (OPTIONAL — pipeline works without it)
-4. **Code Gen Engine** — Generate C++ workload + config (strategy registry pattern — open-closed)
-5. **Harness** — Build, run, collect, compare
+2. **Profile Store** — Save/load Profiles as JSON, track iteration history
+3. **Agent Core** — LLM brain: analyzes Profiles, plans Business Workflow, fills behavior implementation, evaluates comparison results, decides iteration strategy. **This is not optional — mirage is an agent-driven system.**
+4. **Code Gen Engine** — Generate C++ workload + config from Agent instructions (strategy registry pattern — open-closed)
+5. **Harness** — Build, run, collect, compare; feeds results back to Agent for iteration decisions
 
-Cross-cutting:
+**Cross-cutting:**
 
 - **Observability** — structlog structured logging, IterationHistory (convergence trends), PipelineTelemetry (step timing)
 - **Config** — FrameworkConfig from YAML (single source of truth for all thresholds/defaults)
 - **Result Models** — Unified pydantic models (BuildResult, ExecutionResult, etc.)
 
-## Phase 1 Status
+## Current Status
 
-End-to-end loop works: ingest → agent → generate → build → (manual run/collect/compare).
-No auto-iteration yet (Phase 2). Agent is optional — works in local-only mode with manual instruction.
+**Phase 1** — Single-pass agent chain works end-to-end:
+ingest → Agent analyzes/plans/fills → generate → build → (manual run/collect/compare).
+
+**Phase 2 (next)** — Auto-iteration loop: run → collect → compare → Agent evaluates → Agent adjusts → regenerate → repeat until Topdown < 10%, memory bandwidth < 5%, hotspot coverage > 80%.
 
 ## Usage
-
-### Full pipeline with Agent (requires ANTHROPIC_API_KEY)
 
 ```python
 from harness.pipeline import Pipeline
@@ -49,39 +61,16 @@ result = pipeline.run_full_pipeline(
 )
 ```
 
-### Local-only mode (no API key needed)
-
-```python
-from harness.pipeline import Pipeline
-from agent.agent_core import AgentCore
-from config.framework_config import AgentConfig
-
-no_agent = AgentCore(config=AgentConfig(api_key=None))
-pipeline = Pipeline(output_base_dir="./output", agent=no_agent)
-
-profile = pipeline.ingest_customer_data(
-    flamegraph_path="path/to/flamegraph.txt",
-    topdown_path="path/to/topdown.json",
-)
-
-# Provide manual generation instruction
-instruction = {
-    "project_name": "my_workload",
-    "compile_flags": "-O2",
-    "dependencies": [{"name": "folly", "version": "2.1.0"}],
-    "stages": [...],
-    "config": {"thread_count": 8, "qps": 500},
-}
-project_dir = pipeline.generate_workload(profile, instruction=instruction)
-```
+Set `ANTHROPIC_API_KEY` environment variable before running. The Agent drives all analysis, planning, and generation decisions.
 
 ## Quality Gates
 
 - **pre-commit**: ruff (lint + format), mypy (strict), basic checks
 - **pytest**: 87% coverage (104 tests passing)
 - **mypy**: strict mode with pydantic plugin — 37 source files, zero errors
+- **GitHub CI**: runs on every push/PR to main
 
-Run all checks: `pre-commit run --all-files`
+Run all checks locally: `pre-commit run --all-files`
 
 ## Design Docs
 
