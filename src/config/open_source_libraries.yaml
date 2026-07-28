@@ -1,0 +1,52 @@
+libraries:
+  - name: folly
+    namespace_patterns:
+      - "folly::"
+      - "folly\\."
+    header_patterns:
+      - "folly/"
+  - name: fbthrift
+    namespace_patterns:
+      - "fbthrift::"
+      - "thrift::"
+    header_patterns:
+      - "fbthrift/"
+  - name: brpc
+    namespace_patterns:
+      - "brpc::"
+    header_patterns:
+      - "brpc/"
+  - name: taskflow
+    namespace_patterns:
+      - "tf::"
+      - "taskflow::"
+    header_patterns:
+      - "taskflow/"
+  - name: std
+    namespace_patterns:
+      - "std::"
+    header_patterns: []
+  - name: glog
+    namespace_patterns:
+      - "google::LogMessage"
+    header_patterns:
+      - "glog/"
+  - name: protobuf
+    namespace_patterns:
+      - "google::protobuf::"
+    header_patterns:
+      - "google/protobuf/"
+  - name: jemalloc
+    namespace_patterns:
+      - "je_"
+      - "jemalloc::"
+    header_patterns:
+      - "jemalloc/"
+  - name: boost
+    namespace_patterns:
+      - "boost::"
+    header_patterns:
+      - "boost/"
+
+default_classification: customer_custom
+default_library: custom

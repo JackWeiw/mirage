@@ -1,0 +1,24 @@
+framework:
+  log_level: INFO
+  json_logging: false
+  agent:
+    model: claude-sonnet-4-6
+    max_tokens: 4096
+  comparison:
+    topdown_threshold_pct: 10.0
+    memory_threshold_pct: 5.0
+    coverage_threshold_pct: 80.0
+  run_defaults:
+    warmup_seconds: 30
+    measurement_seconds: 60
+    thread_count: 4
+    qps: 100
+  codegen:
+    compile_flags: "-O2 -march=armv8.2-a"
+    default_dependencies:
+      - name: folly
+        version: "2.1.0"
+  harness:
+    cmake_path: cmake
+    make_path: make
+    build_dir_suffix: build
