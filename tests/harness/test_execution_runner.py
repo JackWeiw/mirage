@@ -41,7 +41,7 @@ def test_validate_run_with_echo_script() -> None:
         script_path.write_text("@echo test output\r\n@exit /b 0\r\n")
     else:
         script_path = script_dir / "test_binary.sh"
-        script_path.write_text("echo 'test output'\nexit 0\n")
+        script_path.write_text("#!/bin/sh\necho 'test output'\nexit 0\n")
         os.chmod(script_path, 0o755)
     runner = ExecutionRunner()
     result = runner.validate_run(str(script_path))
