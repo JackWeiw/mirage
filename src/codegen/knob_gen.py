@@ -2,12 +2,13 @@
 
 import json
 import pathlib
+from typing import Any
 
 
 class KnobGenerator:
     """Generate config.json with runtime tuning parameters."""
 
-    def generate_config(self, knobs: dict[str, object], output_path: pathlib.Path) -> pathlib.Path:
+    def generate_config(self, knobs: dict[str, Any], output_path: pathlib.Path) -> pathlib.Path:
         """Write a config.json file with tuning parameters.
 
         Args:
@@ -30,7 +31,7 @@ class KnobGenerator:
         output_path.write_text(json.dumps(config, indent=2))
         return output_path
 
-    def update_config(self, config_path: pathlib.Path, updates: dict[str, object]) -> pathlib.Path:
+    def update_config(self, config_path: pathlib.Path, updates: dict[str, Any]) -> pathlib.Path:
         """Update specific fields in an existing config.json."""
         with open(config_path) as f:
             config = json.load(f)

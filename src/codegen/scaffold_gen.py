@@ -1,6 +1,7 @@
 """Generate C++ project scaffold from Jinja2 templates."""
 
 import pathlib
+from typing import Any
 
 import jinja2
 
@@ -15,7 +16,7 @@ class ScaffoldGenerator:
             keep_trailing_newline=True,
         )
 
-    def generate(self, context: dict[str, object], output_dir: pathlib.Path) -> list[pathlib.Path]:
+    def generate(self, context: dict[str, Any], output_dir: pathlib.Path) -> list[pathlib.Path]:
         """Render all scaffold templates and write to output_dir.
 
         Args:

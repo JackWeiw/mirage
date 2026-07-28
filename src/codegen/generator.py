@@ -1,6 +1,7 @@
 """Orchestrates the full code generation pipeline: scaffold -> behavior -> knob."""
 
 import pathlib
+from typing import Any
 
 from codegen.behavior_gen import BehaviorGenerator
 from codegen.knob_gen import KnobGenerator
@@ -21,7 +22,7 @@ class WorkloadGenerator:
         self.behavior = BehaviorGenerator()
         self.knob = KnobGenerator()
 
-    def generate(self, instruction: dict[str, object], output_dir: pathlib.Path) -> pathlib.Path:
+    def generate(self, instruction: dict[str, Any], output_dir: pathlib.Path) -> pathlib.Path:
         """Generate a complete workload project from a generation instruction.
 
         Args:
@@ -37,7 +38,7 @@ class WorkloadGenerator:
 
         # Generate behavior stage files
         stage_files: list[str] = []
-        stage_contexts: list[dict[str, object]] = []
+        stage_contexts: list[dict[str, Any]] = []
         for stage in instruction.get("stages", []):
             filename, content = self.behavior.generate_stage_file(stage)
             filepath = output_dir / filename
