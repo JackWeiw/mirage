@@ -1,0 +1,16 @@
+// Compute synthesis stage: {{ stage_name }}
+// Simulates compute-intensive behavior ({{ synthesis_config.compute_type | default('general') }})
+
+#pragma once
+#include <vector>
+#include <cmath>
+#include <algorithm>
+
+inline void {{ stage_name }}_compute(int iterations = {{ synthesis_config.iterations | default(100) }}) {
+    // Compute-intensive loop — simulate {{ synthesis_config.compute_type | default('general') }} workload
+    volatile double result = 0.0;
+    for (int i = 0; i < iterations; ++i) {
+        result += std::sin(i * 0.001) * std::cos(i * 0.002);
+        result += std::sqrt(static_cast<double>(i + 1));
+    }
+}

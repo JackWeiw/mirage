@@ -1,0 +1,13 @@
+// Direct call wrapper: {{ stage_name }}
+// Calls open-source library function {{ function }} directly
+
+#pragma once
+{% for dep_header in dep_headers %}
+#include <{{ dep_header }}>
+{% endfor %}
+
+inline void {{ stage_name }}_direct_call() {
+    // Directly call {{ function }} from {{ library }}
+    // This ensures call-stack path alignment with customer workload
+    {{ call_statement }};
+}
