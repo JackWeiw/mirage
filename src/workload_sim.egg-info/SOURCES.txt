@@ -1,8 +1,0 @@
-README.md
-pyproject.toml
-src/__init__.py
-src/workload_sim.egg-info/PKG-INFO
-src/workload_sim.egg-info/SOURCES.txt
-src/workload_sim.egg-info/dependency_links.txt
-src/workload_sim.egg-info/requires.txt
-src/workload_sim.egg-info/top_level.txt

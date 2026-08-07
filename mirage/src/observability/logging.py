@@ -19,7 +19,10 @@ def configure_logging(log_level: str = "INFO", json_output: bool = False) -> Non
             structlog.processors.StackInfoRenderer(),
             structlog.processors.TimeStamper(fmt="iso"),
             structlog.processors.UnicodeDecoder(),
-            structlog.processors.JSONRenderer() if json_output else structlog.dev.ConsoleRenderer(),
+            # structlog renderer types are not fully stubbed; ignore the list-item mismatch.
+            structlog.processors.JSONRenderer()  # type: ignore[list-item]
+            if json_output
+            else structlog.dev.ConsoleRenderer(),
         ],
         wrapper_class=structlog.make_filtering_bound_logger(logging.getLevelName(log_level)),
         context_class=dict,
