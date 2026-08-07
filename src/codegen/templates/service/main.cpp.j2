@@ -1,0 +1,29 @@
+#include <chrono>
+#include <thread>
+#include <vector>
+#include "config_loader.h"
+#include "service.h"
+
+// Request-driven runner: each request walks the full call tree once
+// ({{ service_method }} -> stages -> open-source calls + custom synthesis).
+// Per-node self-time budgets baked into service.cpp make perf samples scale
+// with the customer's self% at every level. thread_count replicates the
+// customer's concurrency so memory pressure (backend_bound) is plausible.
+int main(int argc, char* argv[]) {
+    std::string config_path = "config.json";
+    if (argc > 1) config_path = argv[1];
+    RunConfig cfg = load_config(config_path);
+
+    auto worker = [&cfg]() {
+        auto end = std::chrono::steady_clock::now()
+            + std::chrono::seconds(cfg.warmup_seconds + cfg.measurement_seconds);
+        while (std::chrono::steady_clock::now() < end) {
+            {{ service_method }}();  // one request = one full call-tree traversal
+        }
+    };
+
+    std::vector<std::thread> pool;
+    for (int i = 0; i < cfg.thread_count; ++i) pool.emplace_back(worker);
+    for (auto& t : pool) t.join();
+    return 0;
+}

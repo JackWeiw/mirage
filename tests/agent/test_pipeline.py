@@ -182,3 +182,26 @@ def test_pipeline_compare_results() -> None:
     # Verify iteration history was updated
     assert len(pipeline.history.records) == 1
     assert pipeline.history.records[0].iteration == 0
+
+
+def test_pipeline_run_and_compare_structural_alignment(tmp_path: pathlib.Path) -> None:
+    """run_and_compare emits a structural-alignment report (no build/run needed)."""
+    from codegen.call_tree import CallTreeBuilder
+
+    no_agent = AgentCore(config=AgentConfig(api_key=None))
+    pipeline = Pipeline(output_base_dir=tmp_path, agent=no_agent)
+    desc = CallTreeBuilder().build(
+        [(["main", "Svc::process", "folly::X"], 100)], profile=None, project_name="t"
+    )
+    project_dir = pipeline.generate_workload_from_descriptor(desc)
+    assert (project_dir / "service.cpp").exists()
+    assert (project_dir / "main.cpp").exists()
+
+    workload_stacks = [(["main", "Svc::process", "folly::X"], 100)]
+    report = pipeline.run_and_compare(
+        customer_stacks=[(["main", "Svc::process", "folly::X"], 100)],
+        workload_stacks=workload_stacks,
+    )
+    assert "structural_alignment" in report
+    assert report["structural_alignment"]["overall_overlap_pct"] == 100.0
+    assert report["structural_alignment"]["trunk_present"] is True

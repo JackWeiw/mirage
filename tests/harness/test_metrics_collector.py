@@ -59,3 +59,18 @@ def test_collector_collect_topdown_no_devkit() -> None:
     result = collector.collect_topdown(pathlib.Path("/tmp/out.json"))
     assert result.success is False
     assert "devkit_cmd not configured" in result.error
+
+
+def test_collect_flamegraph_no_perf_returns_failure(tmp_path: pathlib.Path) -> None:
+    # perf is not available in the test environment -> FileNotFoundError -> failure
+    collector = MetricsCollector(perf_cmd="perf-not-a-real-binary")
+    result = collector.collect_flamegraph(tmp_path / "fg.txt", duration=1)
+    assert result.success is False
+    assert result.error
+
+
+def test_stackcollapse_converts_perf_script_to_folded() -> None:
+    perf_script = "main\nprocess\nfolly::then\n\nmain\nprocess\n"
+    folded = MetricsCollector._stackcollapse(perf_script)
+    assert "main;process;folly::then 1" in folded
+    assert "main;process 1" in folded

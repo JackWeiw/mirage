@@ -1,0 +1,6 @@
+#pragma once
+
+{% for stage in stages %}
+__attribute__((noinline)) void {{ stage.method }}_stage();
+{% endfor %}
+__attribute__((noinline)) void {{ service_method }}();

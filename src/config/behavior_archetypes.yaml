@@ -1,0 +1,15 @@
+# Keyword -> behavior archetype for customer-private function synthesis.
+# First match wins; extensible - add keyword patterns without code changes.
+# Used by ArchetypeInferrer to pick a realistic compute kernel per custom leaf.
+archetypes:
+  - archetype: matmul
+    keywords: ["matmul", "matrix_mul", "gemm", "mm_compute"]
+  - archetype: hash
+    keywords: ["hash", "embedding"]
+  - archetype: sort
+    keywords: ["sort", "merge", "rank", "topk"]
+  - archetype: branch
+    keywords: ["branch", "filter", "dedup", "cond"]
+  - archetype: memory
+    keywords: ["lookup", "access", "fetch", "load", "store", "search"]
+default_archetype: compute

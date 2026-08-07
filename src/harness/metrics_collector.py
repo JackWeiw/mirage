@@ -48,6 +48,72 @@ class MetricsCollector:
         except (subprocess.TimeoutExpired, FileNotFoundError) as e:
             return CollectionResult(success=False, error=str(e))
 
+    def collect_flamegraph(
+        self, output_path: pathlib.Path, duration: int = 60, pid: int | None = None
+    ) -> CollectionResult:
+        """Collect a folded flamegraph via perf record + perf script + stackcollapse.
+
+        Requires perf on the ARM target. Returns failure if perf is unavailable
+        (e.g. on a dev machine without perf).
+        """
+        if self.perf_cmd is None:
+            return CollectionResult(success=False, error="perf_cmd not configured")
+        try:
+            if pid is not None:
+                record_cmd = [
+                    self.perf_cmd,
+                    "record",
+                    "-g",
+                    "-p",
+                    str(pid),
+                    "--",
+                    "sleep",
+                    str(duration),
+                ]
+            else:
+                record_cmd = [
+                    self.perf_cmd,
+                    "record",
+                    "-g",
+                    "--",
+                    "sleep",
+                    str(duration),
+                ]
+            subprocess.run(
+                record_cmd, capture_output=True, text=True, timeout=duration + 30, check=False
+            )
+            script = subprocess.run(
+                [self.perf_cmd, "script"],
+                capture_output=True,
+                text=True,
+                timeout=duration + 30,
+            )
+            if script.returncode != 0:
+                return CollectionResult(success=False, error=script.stderr)
+            output_path.write_text(self._stackcollapse(script.stdout))
+            return CollectionResult(success=True, flamegraph_path=str(output_path))
+        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            return CollectionResult(success=False, error=str(e))
+
+    @staticmethod
+    def _stackcollapse(perf_script_output: str) -> str:
+        """Minimal perf-script -> folded-stack converter (frame;frame count)."""
+        lines: list[str] = []
+        stack: list[str] = []
+        for raw in perf_script_output.splitlines():
+            line = raw.strip()
+            if not line:
+                if stack:
+                    lines.append(";".join(stack) + " 1")
+                    stack = []
+                continue
+            if line.startswith("#") or "\t" in line:
+                continue
+            stack.append(line)
+        if stack:
+            lines.append(";".join(stack) + " 1")
+        return "\n".join(lines)
+
     def parse_topdown_file(self, filepath: pathlib.Path) -> Profile:
         """Parse a previously collected Topdown JSON file."""
         return self.topdown_parser.parse_json(filepath)

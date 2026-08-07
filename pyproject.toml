@@ -70,6 +70,10 @@ module = "jinja2.*"
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
+module = "pytest"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
 module = "observability.logging"
 warn_return_any = false
 

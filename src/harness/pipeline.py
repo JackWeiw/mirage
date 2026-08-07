@@ -9,6 +9,7 @@ from typing import Any
 
 from agent.agent_core import AgentCore
 from agent.strategy import decide_iteration_priority
+from codegen.call_tree import SkeletonDescriptor
 from codegen.generator import WorkloadGenerator
 from config.framework_config import FrameworkConfig
 from harness.build_runner import BuildRunner
@@ -24,6 +25,7 @@ from observability.telemetry import PipelineTelemetry
 from profile.comparator import ProfileComparator
 from profile.profile_schema import Profile, ProfileMetadata
 from profile.profile_store import ProfileStore
+from profile.structural_comparator import StructuralComparator
 
 logger = get_logger("pipeline")
 
@@ -140,6 +142,46 @@ class Pipeline:
 
         self.telemetry.end_step("generating", success=True)
         return project_dir
+
+    def generate_workload_from_descriptor(self, desc: SkeletonDescriptor) -> pathlib.Path:
+        """Generate a workload project from a SkeletonDescriptor (call-tree path)."""
+        self.telemetry.start_step("generating")
+        project_dir = self.output_base_dir / "generated_workload"
+        self.generator.generate_from_descriptor(desc, project_dir)
+        logger.info("workload_generated_from_descriptor", dir=str(project_dir))
+        self.telemetry.end_step("generating", success=True)
+        return project_dir
+
+    def run_and_compare(
+        self,
+        customer_stacks: list[tuple[list[str], int]],
+        project_dir: pathlib.Path | None = None,
+        binary_path: str | None = None,
+        run_config: RunConfig | None = None,
+        flamegraph_path: pathlib.Path | None = None,
+        workload_stacks: list[tuple[list[str], int]] | None = None,
+    ) -> dict[str, Any]:
+        """Single-pass build -> run -> collect -> structural compare.
+
+        On a dev machine without perf/cmake, pass workload_stacks directly to
+        exercise the structural comparison without collection. On ARM, pass
+        flamegraph_path (collected via perf) instead.
+        """
+        self.telemetry.start_step("run_and_compare")
+        report: dict[str, Any] = {}
+        if binary_path is None and project_dir is not None:
+            binary_path = self.build_workload(project_dir)
+        if binary_path is not None:
+            report["execution"] = self.execution_runner.run(binary_path, run_config)
+        if workload_stacks is None and flamegraph_path is not None:
+            workload_stacks = self.flamegraph_parser.parse_stacks(flamegraph_path)
+        if workload_stacks is None:
+            workload_stacks = []
+        report["structural_alignment"] = StructuralComparator().compare(
+            customer_stacks, workload_stacks
+        )
+        self.telemetry.end_step("run_and_compare", success=True)
+        return report
 
     def build_workload(self, project_dir: pathlib.Path) -> str | None:
         """Build the generated workload project."""
