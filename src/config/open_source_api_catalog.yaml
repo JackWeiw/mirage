@@ -1,0 +1,26 @@
+# Open-source hotspot function -> buildable call spec. Keys are demangled names.
+# Extensible: add a library/function entry with no code change. Misses fall
+# back to the LLM (which can cache results via record_fallback).
+#
+# Per-library version/cmake_name drive the generated CMakeLists dependencies.
+libraries:
+  folly:
+    version: "2.1.0"
+    cmake_name: folly
+    functions:
+      "folly::futures::detail::FutureImpl::then":
+        includes: ["<folly/futures/Future.h>"]
+        statement: "folly::makeFuture(42).then([](int x){ return x + 1; }).wait();"
+        setup: ""
+      "folly::sorted_vector_map::find":
+        includes: ["<folly/sorted_vector_map.h>"]
+        statement: "folly::sorted_vector_map<int,int> m; (void)m.find(0);"
+        setup: ""
+  taskflow:
+    version: "3.5.0"
+    cmake_name: Taskflow
+    functions:
+      "tf::ParallelFor::dispatch":
+        includes: ["<taskflow/algorithm/for_each.hpp>"]
+        statement: "tf::Taskflow tf; tf::for_each(0, 10, [](int){}); (void)tf;"
+        setup: ""

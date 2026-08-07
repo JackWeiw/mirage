@@ -14,8 +14,11 @@ class ComputeSynthesisStrategy(BehaviorStrategy):
     def render(self, stage: dict[str, Any], env: jinja2.Environment) -> tuple[str, str]:
         template = env.get_template("behaviors/compute_synthesis.cpp.j2")
         config = stage.get("strategies", [{}])[0].get("synthesis_config", {})
+        # Honor archetype (descriptor path) with compute_type fallback (legacy path).
+        archetype = config.get("archetype") or config.get("compute_type") or "compute"
         context = {
             "stage_name": stage["stage_name"],
+            "archetype": archetype,
             "synthesis_config": config,
         }
         content = template.render(**context)

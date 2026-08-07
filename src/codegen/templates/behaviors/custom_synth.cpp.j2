@@ -1,12 +1,24 @@
-// Compute synthesis stage: {{ stage_name }} (archetype: {{ archetype }})
+// Custom synthesis for collapsed customer-private subtree: {{ stage_name }}
+// archetype: {{ archetype }} (self-time budget baked in; ratios mirror customer)
 #pragma once
 #include <algorithm>
 #include <cstdint>
+#include <random>
 #include <vector>
 
-inline void {{ stage_name }}_compute(int iterations = {{ synthesis_config.iterations | default(100) }}) {
+inline void {{ stage_name }}_custom_synth(int iterations = {{ iterations | default(100) }}) {
     volatile uint64_t acc = 0;
-    {%- if archetype == 'hash' %}
+    {%- if archetype == 'memory' %}
+    {
+        const size_t ws = {{ working_set_mb | default(64) }} * size_t(1024 * 1024);
+        const size_t n = ws / sizeof(uint64_t);
+        static std::vector<uint64_t> data;
+        if (data.size() != n) data.assign(n, 42);
+        std::mt19937 rng(12345);
+        std::uniform_int_distribution<size_t> d(0, n - 1);
+        for (int i = 0; i < iterations; ++i) data[d(rng)] += uint64_t(i);
+    }
+    {%- elif archetype == 'hash' %}
     for (int i = 0; i < iterations; ++i) { acc ^= uint64_t(0x9e3779b97f4a7c15) + (acc << 6) + (acc >> 2); acc += i; }
     {%- elif archetype == 'matmul' %}
     {

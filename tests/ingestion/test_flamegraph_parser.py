@@ -50,3 +50,13 @@ def test_parse_folded_malformed_file_raises() -> None:
     parser = FlamegraphParser()
     with pytest.raises(ValueError):
         parser.parse_folded(DATA_DIR / "malformed_flamegraph.txt")
+
+
+def test_parse_stacks_preserves_per_path_counts(tmp_path: pathlib.Path) -> None:
+    """parse_stacks returns raw (frames, count) lines without leaf aggregation."""
+    fg = tmp_path / "f.txt"
+    fg.write_text("main;a;b 10\nmain;a 5\n")
+    parser = FlamegraphParser()
+    stacks = parser.parse_stacks(fg)
+    expected = [(["main", "a", "b"], 10), (["main", "a"], 5)]
+    assert sorted((tuple(s), c) for s, c in stacks) == sorted((tuple(e), c) for e, c in expected)

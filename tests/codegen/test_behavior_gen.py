@@ -102,3 +102,30 @@ def test_behavior_gen_mixed() -> None:
     assert filename == "pipeline_merge.h"
     assert "pipeline_merge_compute" in content
     assert "pipeline_merge_memory" in content
+
+
+def test_behavior_gen_compute_synthesis_honors_archetype() -> None:
+    gen = BehaviorGenerator()
+    stage = {
+        "stage_name": "hash_stage",
+        "implementation_strategy": "compute_synthesis",
+        "strategies": [{"synthesis_config": {"archetype": "hash", "iterations": 200}}],
+    }
+    filename, content = gen.generate_stage_file(stage)
+    assert filename == "hash_stage.h"
+    assert "hash_stage_compute" in content
+    assert "200" in content
+    # archetype hash -> a hashing kernel, not the legacy sin/cos loop
+    assert "sin" not in content
+
+
+def test_behavior_gen_compute_synthesis_falls_back_to_compute_type() -> None:
+    gen = BehaviorGenerator()
+    stage = {
+        "stage_name": "legacy_stage",
+        "implementation_strategy": "compute_synthesis",
+        "strategies": [{"synthesis_config": {"compute_type": "sort", "iterations": 50}}],
+    }
+    _filename, content = gen.generate_stage_file(stage)
+    # compute_type (legacy) is honored as the archetype
+    assert "std::sort" in content

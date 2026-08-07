@@ -70,6 +70,15 @@ class FlamegraphParser:
         hotspots.sort(key=lambda h: h.self_pct, reverse=True)
         return hotspots
 
+    def parse_stacks(self, filepath: pathlib.Path) -> list[tuple[list[str], int]]:
+        """Return all (frames, count) stacks from a folded flamegraph file.
+
+        Unlike parse_folded (which aggregates by leaf name), this preserves
+        per-path counts so CallTreeBuilder can compute per-node self-time at
+        exact positions in the call tree.
+        """
+        return self._read_folded_lines(filepath)
+
     def _read_folded_lines(self, filepath: pathlib.Path) -> list[tuple[list[str], int]]:
         """Read and parse folded format lines."""
         lines: list[tuple[list[str], int]] = []

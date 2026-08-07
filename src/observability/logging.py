@@ -1,6 +1,7 @@
 """Structured logging configuration using structlog."""
 
 import logging
+from typing import Any
 
 import structlog
 
@@ -12,6 +13,11 @@ def configure_logging(log_level: str = "INFO", json_output: bool = False) -> Non
         log_level: Logging level (DEBUG, INFO, WARNING, ERROR).
         json_output: If true, output JSON format; otherwise, human-readable console format.
     """
+    # structlog renderer types don't share a common base; annotate as Any so the
+    # processor list type-checks under both structlog-installed and stub-less envs.
+    renderer: Any = (
+        structlog.processors.JSONRenderer() if json_output else structlog.dev.ConsoleRenderer()
+    )
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
@@ -19,7 +25,7 @@ def configure_logging(log_level: str = "INFO", json_output: bool = False) -> Non
             structlog.processors.StackInfoRenderer(),
             structlog.processors.TimeStamper(fmt="iso"),
             structlog.processors.UnicodeDecoder(),
-            structlog.processors.JSONRenderer() if json_output else structlog.dev.ConsoleRenderer(),
+            renderer,
         ],
         wrapper_class=structlog.make_filtering_bound_logger(logging.getLevelName(log_level)),
         context_class=dict,
