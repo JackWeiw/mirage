@@ -78,6 +78,13 @@ class ServiceSkeletonGen:
         open_leaves: list[dict[str, Any]] = []
         open_includes: set[str] = set()
         synth: str | None = None
+        # An open-source leaf sitting directly under the service (no customer
+        # wrapper stage) is itself a "stage": emit its real call directly.
+        if stage.node_kind == "open_source_leaf" and stage.self_work.call_spec is not None:
+            open_leaves.append(
+                {"function": stage.function, "call": stage.self_work.call_spec.statement}
+            )
+            open_includes.update(stage.self_work.call_spec.includes)
         for child in stage.children:
             if child.node_kind == "open_source_leaf":
                 call = f"/* no call_spec for {child.function} */"

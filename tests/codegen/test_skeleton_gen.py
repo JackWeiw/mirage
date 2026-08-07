@@ -42,3 +42,18 @@ def test_render_produces_service_and_main(tmp_path) -> None:  # type: ignore[no-
     main_cpp = (tmp_path / "main.cpp").read_text()
     assert "std::thread" in main_cpp
     assert "Svc_process()" in main_cpp
+
+
+def test_open_source_leaf_directly_under_service_is_emitted(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    # Edge case: an open-source call with no customer wrapper stage
+    # (main;process;folly::then) must still emit the real call.
+    stacks = [
+        (["main", "Svc::process", "folly::futures::detail::FutureImpl::then"], 100),
+    ]
+    desc = CallTreeBuilder(catalog=OpenSourceAPICatalog()).build(
+        stacks, profile=None, project_name="t"
+    )
+    ServiceSkeletonGen().generate(desc, tmp_path)
+    service_cpp = (tmp_path / "service.cpp").read_text()
+    assert "makeFuture" in service_cpp  # the open-source call is emitted
+    assert "noinline" in service_cpp
