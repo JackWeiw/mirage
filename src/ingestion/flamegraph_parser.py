@@ -225,14 +225,14 @@ def _link_parents(rects: list[_SvgRect]) -> None:
 def _resolve_counts(rects: list[_SvgRect]) -> None:
     """Resolve inclusive counts: title count if present, else width-derived."""
     root = max(rects, key=lambda r: r.width)
-    root_count = root.title_count if root.title_count is not None else int(round(root.width))
+    root_count = root.title_count if root.title_count is not None else round(root.width)
     for rect in rects:
         if rect.title_count is not None:
             rect.inclusive = rect.title_count
         elif root.width > 0:
-            rect.inclusive = int(round(rect.width / root.width * root_count))
+            rect.inclusive = round(rect.width / root.width * root_count)
         else:
-            rect.inclusive = int(round(rect.width))
+            rect.inclusive = round(rect.width)
 
 
 def _emit_stacks(rects: list[_SvgRect]) -> list[tuple[list[str], int]]:
