@@ -53,9 +53,17 @@ class FunctionClassifier:
         ]
         self.default_classification: str = data.get("default_classification", "customer_custom")
         self.default_library: str = data.get("default_library", "custom")
+        # Memoize per name: classify runs O(rules) regex searches and is called
+        # per-frame per-stack (CallTreeBuilder._merge, StructuralComparator,
+        # FlamegraphParser); the same names recur heavily in flamegraphs.
+        self._cache: dict[str, tuple[str, str]] = {}
 
     def classify(self, function_name: str) -> tuple[str, str]:
         """Classify a function as open_source or customer_custom and identify its library.
+
+        Results are memoized per name on the instance (rules are immutable after
+        __init__), so repeated classifications of the same flamegraph frame skip
+        the O(rules) regex sweep.
 
         Args:
             function_name: C++ function name (e.g., "folly::futures::detail::FutureImpl::then").
@@ -63,7 +71,14 @@ class FunctionClassifier:
         Returns:
             (source, library) tuple where source is "open_source" or "customer_custom".
         """
+        cached = self._cache.get(function_name)
+        if cached is not None:
+            return cached
         for rule in self.rules:
             if rule.matches(function_name):
-                return "open_source", rule.name
-        return self.default_classification, self.default_library
+                result: tuple[str, str] = "open_source", rule.name
+                self._cache[function_name] = result
+                return result
+        result = self.default_classification, self.default_library
+        self._cache[function_name] = result
+        return result
