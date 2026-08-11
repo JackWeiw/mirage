@@ -138,6 +138,9 @@ class FlamegraphParser:
                     count = int(count_str)
                 except ValueError:
                     continue
+                if count < 0:
+                    # A negative count corrupts aggregation; skip the malformed line.
+                    continue
                 frames = stack_str.split(";")
                 if not frames or any(f == "" for f in frames):
                     continue

@@ -246,3 +246,12 @@ def test_parse_folded_tolerates_non_utf8_bytes(tmp_path: pathlib.Path) -> None:
     parser = FlamegraphParser()
     stacks = parser.parse_stacks(fg)
     assert [tuple(s) for s, _ in stacks] == [("main", "a")]
+
+
+def test_parse_folded_rejects_negative_counts(tmp_path: pathlib.Path) -> None:
+    """Negative counts corrupt aggregation; the malformed line is skipped."""
+    fg = tmp_path / "neg.txt"
+    fg.write_text("main;a -5\nmain;b 10\n")
+    parser = FlamegraphParser()
+    stacks = parser.parse_stacks(fg)
+    assert [tuple(s) for s, _ in stacks] == [("main", "b")]
