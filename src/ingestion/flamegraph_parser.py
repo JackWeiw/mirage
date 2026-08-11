@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 # rounding flamegraph.pl applies to rect coordinates.
 _SVG_EPS = 0.5
 
-# SVG <title> text produced by flamegraph.pl: "<function> (<count> <unit>, <pct>%)""
+# SVG <title> text produced by flamegraph.pl: "<function> (<count> <unit>, <pct>%)".
 # e.g. "main (1000 samples, 100%)". The function name is greedy so names that
 # themselves contain " (...)" are preserved; the count is anchored on the
 # trailing " (<int> <unit>, <float>%)" suffix. Unit word is flexible ("samples",
@@ -32,7 +32,9 @@ class FlamegraphParser:
 
     - Folded text (.txt): one stack per line, "frame;frame;... count".
     - flamegraph.pl SVG (.svg): the call tree is reconstructed from the spatial
-      layout (rect x/y/width encodes stack depth and sample proportion).
+      layout (rect x/y/width encodes stack depth and sample proportion). Only
+      <g class="func_g"> groups are treated as frames; the banner / defs /
+      background elements flamegraph.pl emits are ignored.
 
     Args:
         classifier: FunctionClassifier instance. If None, creates default from YAML config.
@@ -54,9 +56,6 @@ class FlamegraphParser:
             FileNotFoundError: If filepath doesn't exist.
             ValueError: If file contains no valid samples.
         """
-        if not filepath.exists():
-            raise FileNotFoundError(f"Flamegraph file not found: {filepath}")
-
         lines = self._to_stacks(filepath)
 
         if not lines:
@@ -101,11 +100,16 @@ class FlamegraphParser:
         Unlike parse_folded (which aggregates by leaf name), this preserves
         per-path counts so CallTreeBuilder can compute per-node self-time at
         exact positions in the call tree. Supports both folded .txt and .svg.
+
+        Raises:
+            FileNotFoundError: If filepath doesn't exist.
         """
         return self._to_stacks(filepath)
 
     def _to_stacks(self, filepath: pathlib.Path) -> list[tuple[list[str], int]]:
-        """Dispatch parsing by suffix: SVG -> spatial reconstruction, else folded."""
+        """Dispatch parsing by suffix; raise FileNotFoundError if the path is missing."""
+        if not filepath.exists():
+            raise FileNotFoundError(f"Flamegraph file not found: {filepath}")
         if filepath.suffix.lower() == ".svg":
             return self._svg_to_stacks(filepath)
         return self._read_folded_lines(filepath)
@@ -150,108 +154,142 @@ class FlamegraphParser:
         if not data.strip():
             return []
         try:
-            rects = self._parse_svg_rects(data)
+            rects = _parse_svg_rects(data)
         except ElementTree.ParseError:
             return []
         if not rects:
             return []
-        self._link_parents(rects)
-        self._resolve_counts(rects)
-        return self._emit_stacks(rects)
+        _link_parents(rects)
+        _resolve_counts(rects)
+        return _emit_stacks(rects)
 
-    @staticmethod
-    def _parse_svg_rects(data: str) -> list[_SvgRect]:
-        """Extract one _SvgRect per flamegraph <g> group (title + rect)."""
-        root = ElementTree.fromstring(data)
-        rects: list[_SvgRect] = []
-        for element in root.iter():
-            if element.tag.rsplit("}", 1)[-1] != "g":
-                continue
-            title_el = FlamegraphParser._find_local(element, "title")
-            rect_el = FlamegraphParser._find_local(element, "rect")
-            if title_el is None or rect_el is None:
-                continue
-            func, title_count = FlamegraphParser._parse_title(title_el.text or "")
-            width = _to_float(rect_el.get("width"))
-            if width <= 0 or not func:
-                continue
-            rects.append(
-                _SvgRect(
-                    func=func,
-                    x=_to_float(rect_el.get("x")),
-                    y=_to_float(rect_el.get("y")),
-                    width=width,
-                    height=_to_float(rect_el.get("height")),
-                    title_count=title_count,
-                )
+
+def _parse_svg_rects(data: str) -> list[_SvgRect]:
+    """Extract one _SvgRect per flamegraph <g class="func_g"> group."""
+    root = ElementTree.fromstring(data)
+    rects: list[_SvgRect] = []
+    for element in root.iter():
+        if element.tag.rsplit("}", 1)[-1] != "g":
+            continue
+        if "func_g" not in (element.get("class") or "").split():
+            continue
+        title_el = _find_local(element, "title")
+        rect_el = _find_local(element, "rect")
+        if title_el is None or rect_el is None:
+            continue
+        func, title_count = _parse_title(title_el.text or "")
+        x = _attr_float(rect_el, "x")
+        y = _attr_float(rect_el, "y")
+        width = _attr_float(rect_el, "width")
+        if x is None or y is None or width is None or width <= 0 or not func:
+            continue
+        height = _attr_float(rect_el, "height")
+        rects.append(
+            _SvgRect(
+                func=func,
+                x=x,
+                y=y,
+                width=width,
+                height=height if height is not None else 0.0,
+                title_count=title_count,
             )
-        return rects
+        )
+    return rects
 
-    @staticmethod
-    def _link_parents(rects: list[_SvgRect]) -> None:
-        """Link each rect to its parent: closest rect below with a containing x-range."""
-        for rect in rects:
-            r_min = rect.x
-            r_max = rect.x + rect.width
-            parent: _SvgRect | None = None
-            for cand in rects:
-                if cand is rect:
-                    continue
-                c_min = cand.x
-                c_max = cand.x + cand.width
-                below = cand.y > rect.y
-                contains = c_min <= r_min + _SVG_EPS and r_max <= c_max + _SVG_EPS
-                if below and contains and (parent is None or cand.y < parent.y):
-                    parent = cand
-            rect.parent = parent
-            if parent is not None:
-                parent.children.append(rect)
 
-    @staticmethod
-    def _resolve_counts(rects: list[_SvgRect]) -> None:
-        """Resolve inclusive counts: title count if present, else width-derived."""
-        root = max(rects, key=lambda r: r.width)
-        root_count = root.title_count if root.title_count is not None else int(round(root.width))
-        for rect in rects:
-            if rect.title_count is not None:
-                rect.inclusive = rect.title_count
-            elif root.width > 0:
-                rect.inclusive = int(round(rect.width / root.width * root_count))
-            else:
-                rect.inclusive = int(round(rect.width))
+def _link_parents(rects: list[_SvgRect]) -> None:
+    """Link each rect to its parent: closest rect below with a containing x-range.
 
-    @staticmethod
-    def _emit_stacks(rects: list[_SvgRect]) -> list[tuple[list[str], int]]:
-        """Emit one folded stack per rect whose self count (inclusive - children) > 0."""
-        stacks: list[tuple[list[str], int]] = []
-        for rect in rects:
-            children_inclusive = sum(c.inclusive for c in rect.children)
-            self_count = rect.inclusive - children_inclusive
-            if self_count <= 0:
-                continue
-            path: list[str] = []
-            node: _SvgRect | None = rect
-            while node is not None:
-                path.append(node.func)
-                node = node.parent
-            path.reverse()
-            stacks.append((path, self_count))
-        return stacks
+    flamegraph.pl stacks each depth on its own y row, so a rect's parent sits in
+    the row directly below it. Rows are scanned closest-first, so the first
+    containing rect is the closest-below parent (matching the naive O(n^2)
+    result while staying ~linear across the contiguous-row layout flamegraph.pl
+    produces). A fallback scans further-below rows in case of a depth gap.
+    """
+    rows: dict[float, list[_SvgRect]] = {}
+    for rect in rects:
+        rows.setdefault(rect.y, []).append(rect)
+    ys = sorted(rows, reverse=True)  # largest y (root row) first
+    for i in range(len(ys)):
+        for rect in rows[ys[i]]:
+            for j in range(i - 1, -1, -1):  # rows below, closest first
+                for cand in rows[ys[j]]:
+                    if _x_contains(cand, rect):
+                        rect.parent = cand
+                        cand.children.append(rect)
+                        break
+                if rect.parent is not None:
+                    break
 
-    @staticmethod
-    def _parse_title(title: str) -> tuple[str, int | None]:
-        """Split a flamegraph <title> into (function_name, inclusive_count|None)."""
-        match = _SVG_TITLE_RE.match(title)
-        if match is None:
-            return title.strip() or "", None
-        return match.group("func"), int(match.group("count"))
 
-    @staticmethod
-    def _find_local(element: ElementTree.Element, name: str) -> ElementTree.Element | None:
-        """Find the first direct child whose local (namespace-stripped) tag matches."""
-        for child in element:
-            if child.tag.rsplit("}", 1)[-1] == name:
-                return child
+def _resolve_counts(rects: list[_SvgRect]) -> None:
+    """Resolve inclusive counts: title count if present, else width-derived."""
+    root = max(rects, key=lambda r: r.width)
+    root_count = root.title_count if root.title_count is not None else int(round(root.width))
+    for rect in rects:
+        if rect.title_count is not None:
+            rect.inclusive = rect.title_count
+        elif root.width > 0:
+            rect.inclusive = int(round(rect.width / root.width * root_count))
+        else:
+            rect.inclusive = int(round(rect.width))
+
+
+def _emit_stacks(rects: list[_SvgRect]) -> list[tuple[list[str], int]]:
+    """Emit one folded stack per rect whose self count (inclusive - children) > 0.
+
+    Children's inclusive counts are capped at the parent's inclusive so rounding
+    in the width-derived fallback can never push self count negative (a no-op
+    for the exact title-count path, where children always sum to <= the parent).
+    """
+    stacks: list[tuple[list[str], int]] = []
+    for rect in rects:
+        children_inclusive = min(sum(c.inclusive for c in rect.children), rect.inclusive)
+        self_count = rect.inclusive - children_inclusive
+        if self_count <= 0:
+            continue
+        path: list[str] = []
+        node: _SvgRect | None = rect
+        while node is not None:
+            path.append(node.func)
+            node = node.parent
+        path.reverse()
+        stacks.append((path, self_count))
+    return stacks
+
+
+def _x_contains(parent: _SvgRect, child: _SvgRect) -> bool:
+    """True if parent's x-range contains child's x-range (within sub-pixel tolerance)."""
+    return (
+        parent.x <= child.x + _SVG_EPS
+        and child.x + child.width <= parent.x + parent.width + _SVG_EPS
+    )
+
+
+def _parse_title(title: str) -> tuple[str, int | None]:
+    """Split a flamegraph <title> into (function_name, inclusive_count|None)."""
+    match = _SVG_TITLE_RE.match(title)
+    if match is None:
+        return title.strip() or "", None
+    return match.group("func"), int(match.group("count"))
+
+
+def _find_local(element: ElementTree.Element, name: str) -> ElementTree.Element | None:
+    """Find the first direct child whose local (namespace-stripped) tag matches."""
+    for child in element:
+        if child.tag.rsplit("}", 1)[-1] == name:
+            return child
+    return None
+
+
+def _attr_float(element: ElementTree.Element, name: str) -> float | None:
+    """Read an SVG attribute as float; None if missing or unparseable."""
+    raw = element.get(name)
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
         return None
 
 
@@ -268,13 +306,3 @@ class _SvgRect:
     inclusive: int = 0
     parent: _SvgRect | None = None
     children: list[_SvgRect] = field(default_factory=list)
-
-
-def _to_float(value: str | None) -> float:
-    """Parse a nullable SVG attribute as float, tolerating missing/garbage values."""
-    if value is None:
-        return 0.0
-    try:
-        return float(value)
-    except ValueError:
-        return 0.0

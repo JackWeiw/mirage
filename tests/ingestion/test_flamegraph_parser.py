@@ -151,3 +151,80 @@ def test_parse_svg_dispatched_by_suffix() -> None:
     stacks = parser.parse_stacks(DATA_DIR / "sample_flamegraph.svg")
     # Every reconstructed stack is non-empty with a positive count.
     assert all(frames and count > 0 for frames, count in stacks)
+
+
+# -- SVG robustness: realistic flamegraph.pl structure + edge cases ---------
+
+
+def test_parse_svg_realistic_fixture_ignores_banner() -> None:
+    """A real flamegraph.pl SVG has <style>/<defs>/a background <rect> and a banner
+    <g> (no class) holding a <title>+<rect>; only func_g frames must be parsed."""
+    parser = FlamegraphParser()
+    hotspots = parser.parse_folded(DATA_DIR / "sample_flamegraph_realistic.svg")
+    funcs = {h.function for h in hotspots}
+    assert "Flame Graph" not in funcs  # banner group must be ignored
+    assert funcs == {"main", "Service::run", "Compute::A", "Compute::B", "leafC"}
+
+
+def test_parse_svg_realistic_fixture_stacks() -> None:
+    """A 4-level chain with a multi-child intermediate node reconstructs correctly."""
+    parser = FlamegraphParser()
+    stacks = parser.parse_stacks(DATA_DIR / "sample_flamegraph_realistic.svg")
+    normalized = sorted((tuple(s), c) for s, c in stacks)
+    expected = sorted(
+        [
+            (("main",), 50),
+            (("main", "Service::run"), 50),
+            (("main", "Service::run", "Compute::A"), 200),
+            (("main", "Service::run", "Compute::B"), 400),
+            (("main", "Service::run", "Compute::A", "leafC"), 300),
+        ]
+    )
+    assert normalized == expected
+
+
+def test_parse_svg_skips_func_g_missing_rect(tmp_path: pathlib.Path) -> None:
+    """A func_g with a title but no <rect> is skipped, not crashed on."""
+    svg = tmp_path / "no_rect.svg"
+    svg.write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg">'
+        '<g class="func_g"><title>only_title (10 samples, 1%)</title></g>'
+        "</svg>"
+    )
+    parser = FlamegraphParser()
+    assert parser.parse_stacks(svg) == []
+
+
+def test_parse_svg_skips_rect_missing_x(tmp_path: pathlib.Path) -> None:
+    """A func_g <rect> missing x is skipped rather than silently placed at x=0."""
+    svg = tmp_path / "no_x.svg"
+    svg.write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg">'
+        '<g class="func_g"><title>orphan (10 samples, 1%)</title>'
+        '<rect y="48.0" width="50.0" height="16.0"/></g>'
+        "</svg>"
+    )
+    parser = FlamegraphParser()
+    assert parser.parse_stacks(svg) == []
+
+
+def test_parse_svg_self_count_zero_emits_no_line(tmp_path: pathlib.Path) -> None:
+    """A parent fully covered by its child has self count 0 and emits no line."""
+    svg = tmp_path / "full_cover.svg"
+    svg.write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg">'
+        '<g class="func_g"><title>main (100 samples, 100%)</title>'
+        '<rect x="0.0" y="48.0" width="100.0" height="16.0"/></g>'
+        '<g class="func_g"><title>child (100 samples, 100%)</title>'
+        '<rect x="0.0" y="32.0" width="100.0" height="16.0"/></g>'
+        "</svg>"
+    )
+    parser = FlamegraphParser()
+    stacks = parser.parse_stacks(svg)
+    assert sorted((tuple(s), c) for s, c in stacks) == [(("main", "child"), 100)]
+
+
+def test_parse_stacks_missing_svg_raises_filenotfound() -> None:
+    parser = FlamegraphParser()
+    with pytest.raises(FileNotFoundError):
+        parser.parse_stacks(DATA_DIR / "nonexistent.svg")

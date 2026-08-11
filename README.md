@@ -28,7 +28,7 @@ Customer data → Agent analyzes → Agent plans workflow → Agent fills detail
 
 **Five components:**
 
-1. **Data Ingestion** — Parse flamegraph, Topdown, memory data → structured Profile (config-driven classifier)
+1. **Data Ingestion** — Parse flamegraph (folded `.txt` or flamegraph.pl `.svg`, dispatched by suffix), Topdown, memory data → structured Profile (config-driven classifier). SVG flamegraphs are reconstructed from the flamegraph.pl rect layout into folded stacks; only `flamegraph.pl` SVG is supported (other generators' SVGs differ).
 2. **Profile Store** — Save/load Profiles as JSON, track iteration history
 3. **Agent Core** — LLM brain: analyzes Profiles, plans Business Workflow, fills behavior implementation, evaluates comparison results, decides iteration strategy. **This is not optional — mirage is an agent-driven system.**
 4. **Code Gen Engine** — Generate C++ workload + config from Agent instructions (strategy registry pattern — open-closed)
