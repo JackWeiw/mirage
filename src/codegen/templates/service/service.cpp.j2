@@ -1,0 +1,27 @@
+#include "service.h"
+{% for f in synth_files %}
+#include "{{ f }}"
+{% endfor %}
+{% for inc in includes %}
+#include {{ inc }}
+{% endfor %}
+
+// noinline preserves these frames in the flamegraph (mirrors the customer build,
+// where these frames were not inlined either). Per-node self-time budgets are
+// baked into the stage bodies so flamegraph self% matches at every level.
+__attribute__((noinline)) void {{ service_method }}() {
+    {%- for stage in stages %}
+    {{ stage.method }}_stage();
+    {%- endfor %}
+}
+
+{% for stage in stages %}
+__attribute__((noinline)) void {{ stage.method }}_stage() {
+    {%- if stage.synth %}
+    {{ stage.synth }}();  // collapsed custom synthesis (stage self {{ '%.1f'|format(stage.self_pct) }}%)
+    {%- endif %}
+    {%- for leaf in stage.open_leaves %}
+    {{ leaf.call }}  // open-source: {{ leaf.function }}
+    {%- endfor %}
+}
+{% endfor %}

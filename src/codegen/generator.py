@@ -4,8 +4,11 @@ import pathlib
 from typing import Any
 
 from codegen.behavior_gen import BehaviorGenerator
+from codegen.call_tree import CallTreeNode, SkeletonDescriptor
+from codegen.catalog import OpenSourceAPICatalog
 from codegen.knob_gen import KnobGenerator
 from codegen.scaffold_gen import ScaffoldGenerator
+from codegen.skeleton_gen import ServiceSkeletonGen
 
 
 class WorkloadGenerator:
@@ -19,8 +22,57 @@ class WorkloadGenerator:
 
     def __init__(self) -> None:
         self.scaffold = ScaffoldGenerator()
+        self.skeleton = ServiceSkeletonGen()
         self.behavior = BehaviorGenerator()
         self.knob = KnobGenerator()
+        self.catalog = OpenSourceAPICatalog()
+
+    def generate_from_descriptor(
+        self, desc: SkeletonDescriptor, output_dir: pathlib.Path
+    ) -> pathlib.Path:
+        """Generate a project from a SkeletonDescriptor (call-tree-driven path).
+
+        Renders behavior synth headers, then the scaffold (CMakeLists,
+        config_loader, config.json, flat main), then the service skeleton
+        (service.h, service.cpp, request-driven main overwriting the flat
+        one), then overrides config.json with knob defaults.
+        """
+        output_dir.mkdir(parents=True, exist_ok=True)
+        synth_files = self.behavior.generate_synth_headers(desc, output_dir)
+        deps, dep_headers = self._dependencies(desc)
+        scaffold_context = {
+            "project_name": desc.project_name,
+            "compile_flags": "-O2 -march=armv8.2-a -fno-inline-small-functions",
+            "dependencies": deps,
+            "dep_headers": dep_headers,
+            "stages": [],
+            "extra_sources": ["service.cpp"],
+            "config": desc.config,
+        }
+        self.scaffold.generate(scaffold_context, output_dir)
+        self.skeleton.generate(desc, output_dir, synth_files=synth_files)
+        self.knob.generate_config(desc.config, output_dir / "config.json")
+        return output_dir
+
+    def _dependencies(self, desc: SkeletonDescriptor) -> tuple[list[dict[str, str]], list[str]]:
+        """Derive CMake dependencies + headers from open-source leaves."""
+        libs: set[str] = set()
+        headers: set[str] = set()
+        for node in _walk(desc.root):
+            if node.node_kind == "open_source_leaf":
+                if node.library:
+                    libs.add(node.library)
+                if node.self_work.call_spec is not None:
+                    headers.update(node.self_work.call_spec.includes)
+        specs = self.catalog.library_specs()
+        deps = [
+            {
+                "name": specs.get(lib, {}).get("cmake_name", lib),
+                "version": specs.get(lib, {}).get("version", "0"),
+            }
+            for lib in sorted(libs)
+        ]
+        return deps, sorted(headers)
 
     def generate(self, instruction: dict[str, Any], output_dir: pathlib.Path) -> pathlib.Path:
         """Generate a complete workload project from a generation instruction.
@@ -79,3 +131,14 @@ class WorkloadGenerator:
         self.knob.generate_config(instruction.get("config", {}), config_path)
 
         return output_dir
+
+
+def _walk(node: CallTreeNode) -> list[CallTreeNode]:
+    """Pre-order traversal of a call tree."""
+    out: list[CallTreeNode] = []
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        out.append(current)
+        stack.extend(current.children)
+    return out
