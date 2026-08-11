@@ -2,11 +2,18 @@
 
 import json
 import pathlib
+import time
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from agent.agent_core import AgentCore
+from agent.agent_core import (
+    AgentCore,
+    LLMResponseError,
+    LLMTransientError,
+    LLMTruncationError,
+)
 from config.framework_config import AgentConfig
 
 
@@ -55,17 +62,15 @@ def test_agent_core_parse_json_response_valid() -> None:
 def test_agent_core_parse_json_response_no_json() -> None:
     config = AgentConfig(api_key=None)
     agent = AgentCore(config=config)
-    response = "No JSON here, just plain text."
-    result = agent._parse_json_response(response)
-    assert "raw_response" in result
+    with pytest.raises(LLMResponseError):
+        agent._parse_json_response("No JSON here, just plain text.")
 
 
 def test_agent_core_parse_json_response_malformed_json() -> None:
     config = AgentConfig(api_key=None)
     agent = AgentCore(config=config)
-    response = '{"key": invalid}'
-    result = agent._parse_json_response(response)
-    assert "raw_response" in result
+    with pytest.raises(LLMResponseError):
+        agent._parse_json_response('{"key": invalid}')
 
 
 def test_classification_from_profile_extracts_source_of_truth() -> None:
@@ -133,3 +138,91 @@ def test_analyze_profile_injects_deterministic_classification(monkeypatch: Any) 
             "library": "folly",
         }
     ]
+
+
+# -- LLM call hardening: retry, truncation, loud parse failure -----------------
+
+
+class _TransientError(Exception):
+    """Stand-in for a transient SDK exception in retry tests."""
+
+
+def _stub_client(agent: AgentCore, create_fn: Any) -> None:
+    """Replace the agent's messages.create with a stub (no real network)."""
+    agent._client.messages.create = create_fn
+
+
+def test_call_llm_retries_transient_then_succeeds(monkeypatch: Any) -> None:
+    """Transient errors are retried with backoff; success returns the text."""
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    attempts: list[int] = []
+
+    def fake_create(**_kwargs: Any) -> Any:
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise _TransientError("transient")
+        return SimpleNamespace(stop_reason="end_turn", content=[SimpleNamespace(text='{"ok": 1}')])
+
+    agent = AgentCore(config=AgentConfig(api_key="stub-key"))
+    _stub_client(agent, fake_create)
+    monkeypatch.setattr(agent, "_transient_exceptions", lambda: (_TransientError,))
+    assert agent._call_llm("p") == '{"ok": 1}'
+    assert len(attempts) == 3
+
+
+def test_call_llm_raises_transient_after_retries_exhausted(monkeypatch: Any) -> None:
+    """Always-transient errors exhaust retries and raise LLMTransientError."""
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+
+    def always_fail(**_kwargs: Any) -> Any:
+        raise _TransientError("always")
+
+    agent = AgentCore(config=AgentConfig(api_key="stub-key"))
+    _stub_client(agent, always_fail)
+    monkeypatch.setattr(agent, "_transient_exceptions", lambda: (_TransientError,))
+    with pytest.raises(LLMTransientError):
+        agent._call_llm("p")
+
+
+def test_call_llm_raises_truncation_on_max_tokens(monkeypatch: Any) -> None:
+    """A max_tokens stop_reason raises LLMTruncationError (not retried)."""
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    agent = AgentCore(config=AgentConfig(api_key="stub-key"))
+    _stub_client(agent, lambda **_kwargs: SimpleNamespace(stop_reason="max_tokens", content=[]))
+    monkeypatch.setattr(agent, "_transient_exceptions", lambda: ())
+    with pytest.raises(LLMTruncationError):
+        agent._call_llm("p")
+
+
+def test_call_llm_does_not_retry_non_transient(monkeypatch: Any) -> None:
+    """Non-transient errors propagate immediately (no retry, no sleep)."""
+    sleeps: list[float] = []
+    monkeypatch.setattr(time, "sleep", lambda s: sleeps.append(s))
+
+    class _FatalError(Exception):
+        pass
+
+    def fail(**_kwargs: Any) -> Any:
+        raise _FatalError("bad request")
+
+    agent = AgentCore(config=AgentConfig(api_key="stub-key"))
+    _stub_client(agent, fail)
+    monkeypatch.setattr(agent, "_transient_exceptions", lambda: ())  # nothing transient
+    with pytest.raises(_FatalError):
+        agent._call_llm("p")
+    assert sleeps == []
+
+
+def test_call_llm_json_raises_on_non_json(monkeypatch: Any) -> None:
+    """A non-JSON LLM response raises LLMResponseError, no silent fallback."""
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    agent = AgentCore(config=AgentConfig(api_key="stub-key"))
+    _stub_client(
+        agent,
+        lambda **_kwargs: SimpleNamespace(
+            stop_reason="end_turn", content=[SimpleNamespace(text="not json")]
+        ),
+    )
+    monkeypatch.setattr(agent, "_transient_exceptions", lambda: ())
+    with pytest.raises(LLMResponseError):
+        agent._call_llm_json("p")
