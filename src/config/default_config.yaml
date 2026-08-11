@@ -2,7 +2,7 @@ framework:
   log_level: INFO
   json_logging: false
   agent:
-    model: claude-sonnet-4-6
+    model: claude-sonnet-5
     max_tokens: 4096
   comparison:
     topdown_threshold_pct: 10.0
