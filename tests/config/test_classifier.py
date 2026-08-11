@@ -38,6 +38,21 @@ def test_classifier_brpc() -> None:
     assert lib == "brpc"
 
 
+def test_classifier_tensorflow() -> None:
+    """tensorflow:: (the C++ TF namespace) is open source, distinct from tf:: (taskflow)."""
+    classifier = FunctionClassifier()
+    source, lib = classifier.classify("tensorflow::ops::MatMul")
+    assert source == "open_source"
+    assert lib == "tensorflow"
+
+
+def test_classifier_tf_still_taskflow_not_tensorflow() -> None:
+    """tf:: stays taskflow; tensorflow:: is its own library. They don't cross-match."""
+    classifier = FunctionClassifier()
+    assert classifier.classify("tf::ParallelFor::dispatch") == ("open_source", "taskflow")
+    assert classifier.classify("tensorflow::Tensor") == ("open_source", "tensorflow")
+
+
 def test_classifier_memoizes_repeated_names() -> None:
     """classify caches per name so repeated frames skip the regex sweep."""
     classifier = FunctionClassifier()
