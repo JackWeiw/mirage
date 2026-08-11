@@ -76,3 +76,7 @@ Run all checks locally: `pre-commit run --all-files`
 
 - [Design Spec](docs/superpowers/specs/2026-07-27-workload-simulation-design.md)
 - [Implementation Plan](docs/superpowers/plans/2026-07-27-workload-simulation-phase1-revised.md)
+
+## RFCs
+
+Major features and architectural changes go through an RFC before implementation — see [docs/rfc/README.md](docs/rfc/README.md). Start from the [template](docs/rfc/0000-template.md).
