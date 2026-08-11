@@ -1,6 +1,7 @@
 """Tests for FlamegraphParser and FunctionClassifier."""
 
 import pathlib
+from typing import Any
 
 import pytest
 
@@ -255,3 +256,13 @@ def test_parse_folded_rejects_negative_counts(tmp_path: pathlib.Path) -> None:
     parser = FlamegraphParser()
     stacks = parser.parse_stacks(fg)
     assert [tuple(s) for s, _ in stacks] == [("main", "b")]
+
+
+def test_parse_folded_logs_skipped_malformed_lines(tmp_path: pathlib.Path, capsys: Any) -> None:
+    """Non-blank lines that fail to parse are counted and warned, not silent."""
+    fg = tmp_path / "mixed.txt"
+    fg.write_text("main;a 10\nbadline\nmain;b -5\n;emptyframe 5\n")
+    parser = FlamegraphParser()
+    parser.parse_stacks(fg)
+    captured = capsys.readouterr()
+    assert "skipped_malformed_folded_lines" in captured.out
