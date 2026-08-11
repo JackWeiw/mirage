@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 
 class AgentConfig(BaseModel):
-    model: str = "claude-sonnet-4-6"
+    model: str = "claude-sonnet-5"
     max_tokens: int = 4096
     api_key: str | None = None
 

@@ -1,13 +1,15 @@
 """Tests for FrameworkConfig."""
 
-from config.framework_config import FrameworkConfig
+from config.framework_config import AgentConfig, FrameworkConfig
 
 
 def test_framework_config_defaults() -> None:
     config = FrameworkConfig.defaults()
     assert config.log_level == "INFO"
     assert config.comparison.topdown_threshold_pct == 10.0
-    assert config.agent.model == "claude-sonnet-4-6"
+    # default_config.yaml's model must stay in sync with AgentConfig's default;
+    # assert the invariant rather than a hardcoded id so a bump doesn't rot here.
+    assert config.agent.model == AgentConfig().model
 
 
 def test_framework_config_from_yaml() -> None:
