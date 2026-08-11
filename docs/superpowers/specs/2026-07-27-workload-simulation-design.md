@@ -96,12 +96,14 @@
 
 | Input Type | Format | Extracted Content |
 |------------|--------|-------------------|
-| 火焰图 | SVG / perf script 输出 / 折叠格式 | 调用栈树、函数热点占比、调用频率 |
+| 火焰图 | 折叠格式 `.txt` / flamegraph.pl `.svg` / perf script 输出 | 调用栈树、函数热点占比、调用频率 |
 | Topdown 分析 | JSON/CSV (devkit 输出) | Frontend Bound / Backend Bound / Bad Speculation / Retiring 比例 |
 | 内存特征 | JSON/CSV | 内存带宽、cache miss rate、TLB miss rate |
 | 业务描述 | Markdown / 自由文本 | 业务逻辑、架构描述、关键调用链 |
 | 开源库版本 | JSON/文本 | folly/fbthrift/brpc 版本、编译选项 |
 | 优化策略 | Markdown/表格 | 已验证策略和效果（如 jemalloc 后台线程 +x%） |
+
+> **实现状态（火焰图）**：`FlamegraphParser` 按文件后缀分派——`.txt` 走折叠格式解析；`.svg` 走 flamegraph.pl SVG 空间重建。从每个 `<g class="func_g">` 的 `<title>`（函数名 + 采样计数）与 `<rect>`（x/y/width/height）按“下方最近且 x 区间包含”原则重建父链，inclusive 计数取自 title（缺失时按相对根宽推导），self = inclusive − Σ 子节点 inclusive，每个 self>0 输出一行折叠栈，复用现有 hotspot / 调用树 / 结构对齐管线，下游消费者无需改动。仅支持 flamegraph.pl 标准布局（非 inverted/icicle）；flamegraph.pl 会按宽度截断长函数名，分类器正则可能因此失配——优先使用原始折叠/perf 数据。
 
 ### Profile Schema
 
