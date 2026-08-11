@@ -60,3 +60,94 @@ def test_parse_stacks_preserves_per_path_counts(tmp_path: pathlib.Path) -> None:
     stacks = parser.parse_stacks(fg)
     expected = [(["main", "a", "b"], 10), (["main", "a"], 5)]
     assert sorted((tuple(s), c) for s, c in stacks) == sorted((tuple(e), c) for e, c in expected)
+
+
+# -- SVG (flamegraph.pl) parsing ----------------------------------------------
+
+
+def test_parse_svg_extracts_hotspots() -> None:
+    parser = FlamegraphParser()
+    hotspots = parser.parse_folded(DATA_DIR / "sample_flamegraph.svg")
+    funcs = {h.function for h in hotspots}
+    assert funcs == {
+        "main",
+        "SearchService::process",
+        "folly::futures::detail::FutureImpl::then",
+        "CustomerCustom::hashFeature",
+    }
+
+
+def test_parse_svg_matches_equivalent_folded() -> None:
+    """SVG reconstruction must yield the same self%/cum% as the equivalent folded file."""
+    parser = FlamegraphParser()
+    svg_hot = {h.function: h for h in parser.parse_folded(DATA_DIR / "sample_flamegraph.svg")}
+    txt_hot = {
+        h.function: h
+        for h in parser.parse_folded(DATA_DIR / "sample_flamegraph_folded_equivalent.txt")
+    }
+    assert set(svg_hot) == set(txt_hot)
+    for func in svg_hot:
+        assert svg_hot[func].self_pct == pytest.approx(txt_hot[func].self_pct)
+        assert svg_hot[func].cumulative_pct == pytest.approx(txt_hot[func].cumulative_pct)
+
+
+def test_parse_svg_stacks_preserve_per_path_counts() -> None:
+    parser = FlamegraphParser()
+    stacks = parser.parse_stacks(DATA_DIR / "sample_flamegraph.svg")
+    normalized = sorted((tuple(s), c) for s, c in stacks)
+    expected = sorted(
+        [
+            (("main",), 200),
+            (("main", "SearchService::process"), 370),
+            (
+                (
+                    "main",
+                    "SearchService::process",
+                    "folly::futures::detail::FutureImpl::then",
+                ),
+                250,
+            ),
+            (("main", "SearchService::process", "CustomerCustom::hashFeature"), 180),
+        ]
+    )
+    assert normalized == expected
+
+
+def test_parse_svg_classifies_open_source_vs_custom() -> None:
+    parser = FlamegraphParser()
+    hotspots = parser.parse_folded(DATA_DIR / "sample_flamegraph.svg")
+    open_source = {h.function for h in hotspots if h.source == "open_source"}
+    custom = {h.function for h in hotspots if h.source == "customer_custom"}
+    assert "folly::futures::detail::FutureImpl::then" in open_source
+    assert "CustomerCustom::hashFeature" in custom
+
+
+def test_parse_svg_cumulative_pct_greater_than_self_pct() -> None:
+    parser = FlamegraphParser()
+    hotspots = parser.parse_folded(DATA_DIR / "sample_flamegraph.svg")
+    for h in hotspots:
+        assert h.cumulative_pct >= h.self_pct
+
+
+def test_parse_svg_malformed_raises() -> None:
+    parser = FlamegraphParser()
+    with pytest.raises(ValueError):
+        parser.parse_folded(DATA_DIR / "malformed_flamegraph.svg")
+
+
+def test_parse_svg_without_title_counts_uses_width() -> None:
+    """When titles lack sample counts, counts are derived from rect width (ratios hold)."""
+    parser = FlamegraphParser()
+    svg_stacks = parser.parse_stacks(DATA_DIR / "sample_flamegraph_no_counts.svg")
+    folded_stacks = parser.parse_stacks(DATA_DIR / "sample_flamegraph_folded_equivalent.txt")
+    assert sorted((tuple(s), c) for s, c in svg_stacks) == sorted(
+        (tuple(s), c) for s, c in folded_stacks
+    )
+
+
+def test_parse_svg_dispatched_by_suffix() -> None:
+    """parse_stacks on .svg uses the SVG path, not the folded reader."""
+    parser = FlamegraphParser()
+    stacks = parser.parse_stacks(DATA_DIR / "sample_flamegraph.svg")
+    # Every reconstructed stack is non-empty with a positive count.
+    assert all(frames and count > 0 for frames, count in stacks)
