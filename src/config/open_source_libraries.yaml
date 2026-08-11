@@ -22,6 +22,11 @@ libraries:
       - "taskflow::"
     header_patterns:
       - "taskflow/"
+  - name: tensorflow
+    namespace_patterns:
+      - "tensorflow::"
+    header_patterns:
+      - "tensorflow/"
   - name: std
     namespace_patterns:
       - "std::"
