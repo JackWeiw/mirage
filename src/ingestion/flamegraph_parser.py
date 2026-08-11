@@ -63,6 +63,11 @@ class FlamegraphParser:
 
         total_samples = sum(count for _, count in lines)
 
+        if total_samples <= 0:
+            # Lines exist but every count is zero (or sums to non-positive) —
+            # the downstream self_pct/cum_pct divisions would divide by zero.
+            raise ValueError(f"Flamegraph file has zero total samples: {filepath}")
+
         self_samples: dict[str, int] = {}
         cumulative_samples: dict[str, int] = {}
         call_paths: dict[str, list[str]] = {}

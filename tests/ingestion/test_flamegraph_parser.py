@@ -228,3 +228,12 @@ def test_parse_stacks_missing_svg_raises_filenotfound() -> None:
     parser = FlamegraphParser()
     with pytest.raises(FileNotFoundError):
         parser.parse_stacks(DATA_DIR / "nonexistent.svg")
+
+
+def test_parse_folded_zero_total_samples_raises(tmp_path: pathlib.Path) -> None:
+    """All-zero counts must raise ValueError, not ZeroDivisionError on self_pct."""
+    fg = tmp_path / "zero.txt"
+    fg.write_text("main;a 0\nmain 0\n")
+    parser = FlamegraphParser()
+    with pytest.raises(ValueError):
+        parser.parse_folded(fg)
