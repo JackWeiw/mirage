@@ -8,6 +8,7 @@ Agent is optional — Pipeline works in local-only mode without it.
 import json
 import logging
 import pathlib
+import time
 from typing import Any, cast
 
 from config.framework_config import AgentConfig
@@ -15,6 +16,26 @@ from config.framework_config import AgentConfig
 logger = logging.getLogger(__name__)
 
 PROMPTS_DIR = pathlib.Path(__file__).parent / "prompts"
+
+# Retry policy for transient LLM API errors (rate limit, 5xx, connection).
+_MAX_RETRIES = 3
+_BACKOFF_BASE_SECONDS = 1.0
+
+
+class LLMError(RuntimeError):
+    """Base error for AgentCore LLM failures."""
+
+
+class LLMTruncationError(LLMError):
+    """Raised when the LLM response hit max_tokens before finishing."""
+
+
+class LLMResponseError(LLMError):
+    """Raised when the LLM response cannot be parsed as JSON."""
+
+
+class LLMTransientError(LLMError):
+    """Raised when transient API errors exhaust the retry budget."""
 
 
 class AgentCore:
@@ -48,38 +69,80 @@ class AgentCore:
         filepath = PROMPTS_DIR / name
         return filepath.read_text()
 
+    def _transient_exceptions(self) -> tuple[type[Exception], ...]:
+        """Exception classes worth retrying (rate limit, 5xx, connection).
+
+        Imported lazily so the agent module loads without the SDK installed.
+        Subclasses/tests can override to substitute their own transient types.
+        """
+        try:
+            import anthropic
+        except ImportError:
+            return ()
+        return (
+            anthropic.RateLimitError,
+            anthropic.InternalServerError,
+            anthropic.APIConnectionError,
+        )
+
     def _parse_json_response(self, response_text: str) -> dict[str, Any]:
         """Parse JSON from an LLM response text.
 
-        Finds the first { ... } block and parses it.
-        Falls back to raw_response dict if parsing fails.
+        Finds the first { ... } block and parses it. Raises LLMResponseError if
+        no JSON can be parsed (no silent fallback) so a malformed response
+        surfaces loudly instead of producing an empty workload downstream.
         """
-        try:
-            json_start = response_text.find("{")
-            json_end = response_text.rfind("}") + 1
-            if json_start >= 0 and json_end > json_start:
+        json_start = response_text.find("{")
+        json_end = response_text.rfind("}") + 1
+        if json_start >= 0 and json_end > json_start:
+            try:
                 return cast("dict[str, Any]", json.loads(response_text[json_start:json_end]))
-        except json.JSONDecodeError:
-            pass
-        return {"raw_response": response_text}
+            except json.JSONDecodeError:
+                pass
+        raise LLMResponseError(f"LLM response was not valid JSON: {response_text[:200]!r}")
 
     def _call_llm(self, prompt: str) -> str:
         """Call the LLM with a prompt and return the response text.
 
+        Retries transient API errors (rate limit / 5xx / connection) with
+        exponential backoff. Raises LLMTruncationError if the response hit
+        max_tokens; LLMTransientError if the retry budget is exhausted.
+
         Raises:
-            RuntimeError: If agent is not available (no API key/client).
+            RuntimeError: If the agent is not available (no API key/client).
         """
         if self._client is None:
             raise RuntimeError(
                 "Agent not available — no API key configured. Use local-only mode instead."
             )
+        transient = self._transient_exceptions()
+        last_exc: Exception | None = None
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                response = self._client.messages.create(
+                    model=self.model,
+                    max_tokens=self.max_tokens,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                if response.stop_reason == "max_tokens":
+                    raise LLMTruncationError(
+                        f"LLM response truncated at max_tokens={self.max_tokens}; "
+                        "raise max_tokens or split the call."
+                    )
+                return str(response.content[0].text)
+            except transient as exc:
+                last_exc = exc
+                if attempt == _MAX_RETRIES:
+                    raise LLMTransientError(
+                        f"LLM call failed after {_MAX_RETRIES + 1} attempts"
+                    ) from exc
+                logger.warning("llm_transient_retry attempt=%d error=%s", attempt, exc)
+                time.sleep(_BACKOFF_BASE_SECONDS * (2**attempt))
+        raise LLMTransientError(f"LLM call failed after {_MAX_RETRIES + 1} attempts") from last_exc
 
-        response = self._client.messages.create(
-            model=self.model,
-            max_tokens=self.max_tokens,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return str(response.content[0].text)
+    def _call_llm_json(self, prompt: str) -> dict[str, Any]:
+        """Call the LLM and parse the response as JSON; raise on failure."""
+        return self._parse_json_response(self._call_llm(prompt))
 
     def analyze_profile(self, profile_json: str) -> dict[str, Any]:
         """Analyze a customer Profile and produce structured analysis.
@@ -91,8 +154,7 @@ class AgentCore:
         """
         template = self._load_prompt("analyze_profile.md")
         prompt = template.replace("{profile_json}", profile_json)
-        response_text = self._call_llm(prompt)
-        analysis = self._parse_json_response(response_text)
+        analysis = self._call_llm_json(prompt)
         analysis["hotspot_classification"] = self._classification_from_profile(profile_json)
         return analysis
 
@@ -127,22 +189,19 @@ class AgentCore:
         """Plan Business Workflow stages based on analysis."""
         template = self._load_prompt("plan_workflow.md")
         prompt = template.replace("{analysis_json}", analysis_json)
-        response_text = self._call_llm(prompt)
-        return self._parse_json_response(response_text)
+        return self._call_llm_json(prompt)
 
     def detail_fill(self, workflow_json: str) -> dict[str, Any]:
         """Fill in implementation details for each workflow stage."""
         template = self._load_prompt("detail_fill.md")
         prompt = template.replace("{workflow_json}", workflow_json)
-        response_text = self._call_llm(prompt)
-        return self._parse_json_response(response_text)
+        return self._call_llm_json(prompt)
 
     def evaluate_comparison(self, comparison_json: str) -> dict[str, Any]:
         """Evaluate comparison report and recommend iteration adjustments."""
         template = self._load_prompt("evaluate_comparison.md")
         prompt = template.replace("{comparison_json}", comparison_json)
-        response_text = self._call_llm(prompt)
-        return self._parse_json_response(response_text)
+        return self._call_llm_json(prompt)
 
     def run_full_chain(self, profile_json: str) -> dict[str, Any]:
         """Run the full prompt chain: analyze -> plan -> detail_fill."""
