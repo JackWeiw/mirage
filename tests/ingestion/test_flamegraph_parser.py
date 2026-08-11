@@ -237,3 +237,12 @@ def test_parse_folded_zero_total_samples_raises(tmp_path: pathlib.Path) -> None:
     parser = FlamegraphParser()
     with pytest.raises(ValueError):
         parser.parse_folded(fg)
+
+
+def test_parse_folded_tolerates_non_utf8_bytes(tmp_path: pathlib.Path) -> None:
+    """A stray non-UTF-8 byte must not crash the reader; valid lines still parse."""
+    fg = tmp_path / "bad_encoding.txt"
+    fg.write_bytes(b"main;a 10\n\xff\xff\n")
+    parser = FlamegraphParser()
+    stacks = parser.parse_stacks(fg)
+    assert [tuple(s) for s, _ in stacks] == [("main", "a")]

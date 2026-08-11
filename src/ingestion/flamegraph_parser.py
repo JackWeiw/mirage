@@ -122,7 +122,10 @@ class FlamegraphParser:
     def _read_folded_lines(self, filepath: pathlib.Path) -> list[tuple[list[str], int]]:
         """Read and parse folded-format lines."""
         lines: list[tuple[list[str], int]] = []
-        with open(filepath) as f:
+        # Explicit UTF-8 with replace so a stray non-UTF-8 byte (common in raw
+        # perf output) doesn't crash with UnicodeDecodeError under a strict
+        # locale; the malformed line is then skipped by the parser below.
+        with open(filepath, encoding="utf-8", errors="replace") as f:
             for line in f:
                 line = line.strip()
                 if not line:
