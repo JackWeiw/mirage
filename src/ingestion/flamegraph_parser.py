@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from xml.etree import ElementTree
 
 from ingestion.classifier import FunctionClassifier
+from observability.logging import get_logger
 from profile.profile_schema import HotspotFunction
 
 if TYPE_CHECKING:
@@ -23,6 +24,8 @@ _SVG_EPS = 0.5
 # trailing " (<int> <unit>, <float>%)" suffix. Unit word is flexible ("samples",
 # "ns", "G_cycles", ...) since flamegraph.pl varies it with --count mode.
 _SVG_TITLE_RE = re.compile(r"^(?P<func>.*) \((?P<count>\d+) \w+, [\d.]+%\)$")
+
+logger = get_logger("flamegraph_parser")
 
 
 class FlamegraphParser:
@@ -122,6 +125,7 @@ class FlamegraphParser:
     def _read_folded_lines(self, filepath: pathlib.Path) -> list[tuple[list[str], int]]:
         """Read and parse folded-format lines."""
         lines: list[tuple[list[str], int]] = []
+        skipped = 0
         # Explicit UTF-8 with replace so a stray non-UTF-8 byte (common in raw
         # perf output) doesn't crash with UnicodeDecodeError under a strict
         # locale; the malformed line is then skipped by the parser below.
@@ -129,22 +133,29 @@ class FlamegraphParser:
             for line in f:
                 line = line.strip()
                 if not line:
+                    # Blank lines are benign, not malformed.
                     continue
                 parts = line.rsplit(" ", 1)
                 if len(parts) != 2:
+                    skipped += 1
                     continue
                 stack_str, count_str = parts
                 try:
                     count = int(count_str)
                 except ValueError:
+                    skipped += 1
                     continue
                 if count < 0:
                     # A negative count corrupts aggregation; skip the malformed line.
+                    skipped += 1
                     continue
                 frames = stack_str.split(";")
                 if not frames or any(f == "" for f in frames):
+                    skipped += 1
                     continue
                 lines.append((frames, count))
+        if skipped:
+            logger.warning("skipped_malformed_folded_lines", filepath=str(filepath), count=skipped)
         return lines
 
     # -- flamegraph.pl SVG reconstruction ------------------------------------
