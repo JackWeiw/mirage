@@ -78,3 +78,17 @@ def test_generate_from_descriptor_produces_skeleton_project(tmp_path: pathlib.Pa
     cmake = (tmp_path / "CMakeLists.txt").read_text()
     assert "service.cpp" in cmake
     assert "folly" in cmake
+
+
+def test_custom_leaf_directly_under_service_is_not_dropped(tmp_path: pathlib.Path) -> None:
+    # Regression: a custom leaf with no wrapper stage (main;process;Customer::work)
+    # must not produce an empty stage function - its synth header is generated
+    # and the stage calls it.
+    from codegen.call_tree import CallTreeBuilder
+
+    stacks = [(["main", "Svc::process", "Customer::workload"], 100)]
+    desc = CallTreeBuilder().build(stacks, profile=None, project_name="t")
+    WorkloadGenerator().generate_from_descriptor(desc, tmp_path)
+    service_cpp = (tmp_path / "service.cpp").read_text()
+    assert any(p.name.endswith("_synth.h") for p in tmp_path.iterdir())
+    assert "_custom_synth();" in service_cpp

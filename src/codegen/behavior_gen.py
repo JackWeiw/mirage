@@ -64,6 +64,18 @@ class BehaviorGenerator:
         service = service_node_of(desc.root)
         working_set_mb = int(desc.config.get("working_set_mb", 64))
         for stage in service.children:
+            if stage.node_kind == "custom_synth":
+                # A collapsed custom leaf sitting directly under the service.
+                method = sanitize_identifier(stage.function)
+                filename, content = self.generate_synth_header(
+                    method,
+                    stage.self_work.archetype,
+                    stage.self_work.units,
+                    working_set_mb,
+                )
+                (output_dir / filename).write_text(content)
+                files.append(filename)
+                continue
             synth = next((c for c in stage.children if c.node_kind == "custom_synth"), None)
             if synth is None:
                 continue

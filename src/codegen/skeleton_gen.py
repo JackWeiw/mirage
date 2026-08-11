@@ -85,6 +85,10 @@ class ServiceSkeletonGen:
                 {"function": stage.function, "call": stage.self_work.call_spec.statement}
             )
             open_includes.update(stage.self_work.call_spec.includes)
+        # A collapsed custom leaf sitting directly under the service is itself
+        # a "stage": emit a call to its synthesis function.
+        if stage.node_kind == "custom_synth":
+            synth = f"{method}_custom_synth"
         for child in stage.children:
             if child.node_kind == "open_source_leaf":
                 call = f"/* no call_spec for {child.function} */"
