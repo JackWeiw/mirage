@@ -82,11 +82,46 @@ class AgentCore:
         return str(response.content[0].text)
 
     def analyze_profile(self, profile_json: str) -> dict[str, Any]:
-        """Analyze a customer Profile and produce structured analysis."""
+        """Analyze a customer Profile and produce structured analysis.
+
+        Hotspot classification is injected deterministically from the input
+        Profile (already classified by FunctionClassifier at ingestion) rather
+        than re-derived by the LLM, so downstream plan_workflow uses the
+        classifier's source of truth.
+        """
         template = self._load_prompt("analyze_profile.md")
         prompt = template.replace("{profile_json}", profile_json)
         response_text = self._call_llm(prompt)
-        return self._parse_json_response(response_text)
+        analysis = self._parse_json_response(response_text)
+        analysis["hotspot_classification"] = self._classification_from_profile(profile_json)
+        return analysis
+
+    @staticmethod
+    def _classification_from_profile(profile_json: str) -> list[dict[str, Any]]:
+        """Extract the deterministic hotspot classification from a Profile JSON.
+
+        The Profile's hotspots are already classified by FunctionClassifier at
+        ingestion; return [{function, source, library}] verbatim so the analysis
+        output carries the source of truth instead of an LLM re-derivation.
+        """
+        try:
+            data = json.loads(profile_json)
+        except json.JSONDecodeError:
+            return []
+        hotspots = data.get("hotspots", []) if isinstance(data, dict) else []
+        classification: list[dict[str, Any]] = []
+        for hotspot in hotspots:
+            if not isinstance(hotspot, dict):
+                continue
+            if "function" in hotspot and "source" in hotspot and "library" in hotspot:
+                classification.append(
+                    {
+                        "function": hotspot["function"],
+                        "source": hotspot["source"],
+                        "library": hotspot["library"],
+                    }
+                )
+        return classification
 
     def plan_workflow(self, analysis_json: str) -> dict[str, Any]:
         """Plan Business Workflow stages based on analysis."""
