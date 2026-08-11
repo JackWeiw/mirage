@@ -403,3 +403,98 @@ docs/superpowers/specs/ 2026-08-07-callstack-alignment-design.md        (NEW, th
   priority strategy (`decide_iteration_priority`) into a
   `compare→adjust→regen` loop over the `SkeletonDescriptor` + `config.json`
   (structural changes via descriptor; param changes via config — no regen).
+
+---
+
+## 12. Implementation Notes (Realized Behavior)
+
+> This section documents the as-built behavior after the Front A implementation
+> and review, refining the design above where it was underspecified and
+> recording edge cases handled during review.
+
+### 12.1 Collapse rule (as built)
+
+The spec's §4.1 described collapsing "maximal customer-custom subtrees with no
+open-source descendant." The implementation uses a **per-parent custom-leaf
+merge** that is slightly less aggressive (and preserves more skeleton):
+
+- Interior customer-custom nodes on the path to a leaf are **kept** as `stage`
+  skeleton nodes (their frames appear in the generated flamegraph).
+- Only **customer-custom leaf** children are merged, per parent, into a single
+  `custom_synth` node (`self_pct` = sum of merged leaves' self_pct; archetype =
+  dominant by function-name keyword via `behavior_archetypes.yaml`).
+- Open-source leaves are preserved as `open_source_leaf` real-call nodes.
+
+This preserves the trunk + stage + interior-custom skeleton shape while still
+collapsing terminal custom work, matching the chosen "骨架 + 开源对齐" granularity.
+
+### 12.2 Service-node detection (`service_node_of`)
+
+The service node is the call-tree node whose direct children are the business
+stages (the request-entry fan-out point). `service_node_of` descends the
+single-child trunk chain while the child is neither a leaf nor a stage, and
+stops at:
+
+- the first node with multiple children (divergence into stages), or
+- the node whose single child is a leaf or a stage (`_is_stage` = all children
+  are `open_source_leaf`/`custom_synth`).
+
+This preserves the service frame even with a **single stage** — a case the naive
+common-prefix trunk approach mishandles (it would over-consume the lone stage
+into the trunk and drop the service frame).
+
+### 12.3 Leaves directly under the service (review-found, fixed)
+
+A leaf (open-source or collapsed custom) sitting **directly under the service**
+(without an intermediate customer stage) is itself treated as a stage:
+
+- **Open-source leaf under service** (`main;process;folly::X`): `_stage_ctx`
+  emits the catalog `call_statement` directly in the stage body — otherwise the
+  stage function would be empty and the frame lost.
+- **Custom leaf under service** (e.g. the search_ranking example's
+  `ResultAssembler::assemble`, self 400 samples): `generate_synth_headers`
+  generates a `custom_synth` header for it and `_stage_ctx` emits the call —
+  otherwise its self-time budget is silently dropped.
+
+Both were caught by generating the example and inspecting `service.cpp` during
+review; regression tests guard them
+(`test_open_source_leaf_directly_under_service_is_emitted`,
+`test_custom_leaf_directly_under_service_is_not_dropped`).
+
+### 12.4 Known limitations (as built)
+
+- **Interior open-source frames** (`folly::A → folly::B`, where `folly::A` is
+  not a leaf): rendered as a sanitized synthetic stage function, **not** a real
+  call. Only open-source *leaves* get real calls (which pull their own internal
+  subtrees for free). The search_ranking example has only open-source leaves, so
+  it is unaffected; workloads with interior open-source frames get partial
+  alignment (leaf real, interior sanitized). Front B/C can refine.
+- **Name sanitization**: generated C++ identifiers replace `::`/non-identifier
+  chars with `_` (`sanitize_identifier`). Distinct customer functions that
+  sanitize identically would collide; not observed in practice.
+- **C++ build** requires the open-source libraries (folly/taskflow) on the
+  ARM target. The framework renders source + CMake; build/run happens on the
+  target. Dev machines without the libs cannot build the C++ (Python rendering
+  + structural comparison are tested without a build).
+- **`run_and_compare`** build/run/collect require the ARM target; on dev
+  machines, pass `workload_stacks` directly to exercise the structural
+  comparison without collection.
+
+### 12.5 Realized file layout (delta vs §10)
+
+- Service templates are `service.h.j2` + `service.cpp.j2` + `main.cpp.j2`
+  (no separate `stage.h.j2`); added `behaviors/custom_synth.cpp.j2`; added
+  `config/behavior_archetypes.yaml`; added `codegen/catalog.py` and
+  `codegen/skeleton_gen.py`. `logging.py` annotates the structlog renderer as
+  `Any` (robust under both stubbed and stub-less mypy envs); `pyproject.toml`
+  adds a `pytest` mypy override so pre-commit's mypy passes on test files.
+
+### 12.6 Verification (as merged)
+
+- `ruff` / `ruff-format` / `mypy --strict` (41 source files, 0 errors) /
+  `pre-commit run --all-files` — clean.
+- `pytest -m "not integration"` — 124 passed, 1 skipped (89% coverage).
+- Generate smoke test on `examples/search_ranking` produces `service.cpp` with
+  `noinline` trunk/stage frames, real folly/taskflow calls, and **non-empty
+  stage bodies** (no dropped stage).
+- GitHub CI `check` — pass.
