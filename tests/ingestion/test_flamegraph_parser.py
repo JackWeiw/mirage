@@ -258,6 +258,17 @@ def test_parse_folded_rejects_negative_counts(tmp_path: pathlib.Path) -> None:
     assert [tuple(s) for s, _ in stacks] == [("main", "b")]
 
 
+def test_parse_folded_call_path_picks_most_sampled(tmp_path: pathlib.Path) -> None:
+    """The representative call_path is the most-sampled path, not the longest."""
+    fg = tmp_path / "multipath.txt"
+    # leaf appears in a high-count short path and a low-count long path.
+    fg.write_text("main;a;leaf 1000\nmain;a;b;c;leaf 5\n")
+    parser = FlamegraphParser()
+    hotspots = parser.parse_folded(fg)
+    leaf = next(h for h in hotspots if h.function == "leaf")
+    assert leaf.call_path == ["main", "a", "leaf"]
+
+
 def test_parse_folded_logs_skipped_malformed_lines(tmp_path: pathlib.Path, capsys: Any) -> None:
     """Non-blank lines that fail to parse are counted and warned, not silent."""
     fg = tmp_path / "mixed.txt"

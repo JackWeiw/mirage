@@ -74,14 +74,19 @@ class FlamegraphParser:
         self_samples: dict[str, int] = {}
         cumulative_samples: dict[str, int] = {}
         call_paths: dict[str, list[str]] = {}
+        call_path_counts: dict[str, int] = {}
 
         for frames, count in lines:
             leaf = frames[-1]
             self_samples[leaf] = self_samples.get(leaf, 0) + count
             for frame in frames:
                 cumulative_samples[frame] = cumulative_samples.get(frame, 0) + count
-            if leaf not in call_paths or len(frames) > len(call_paths[leaf]):
+            # Keep the most-sampled path as the representative call_path: the
+            # path carrying the most samples for a leaf is its dominant context,
+            # more representative than the (rare) deepest stack containing it.
+            if leaf not in call_paths or count > call_path_counts[leaf]:
                 call_paths[leaf] = frames
+                call_path_counts[leaf] = count
 
         hotspots: list[HotspotFunction] = []
         for func, samples in self_samples.items():
