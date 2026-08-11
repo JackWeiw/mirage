@@ -1,6 +1,8 @@
 """Tests for AgentCore."""
 
+import json
 import pathlib
+from typing import Any
 
 import pytest
 
@@ -14,6 +16,7 @@ def test_agent_core_prompt_loading() -> None:
     analyze = (prompts_dir / "analyze_profile.md").read_text()
     assert "customer Profile" in analyze
     assert "{profile_json}" in analyze
+    assert "classify it as either" not in analyze  # LLM no longer re-classifies
 
     plan = (prompts_dir / "plan_workflow.md").read_text()
     assert "stage_name" in plan
@@ -63,3 +66,70 @@ def test_agent_core_parse_json_response_malformed_json() -> None:
     response = '{"key": invalid}'
     result = agent._parse_json_response(response)
     assert "raw_response" in result
+
+
+def test_classification_from_profile_extracts_source_of_truth() -> None:
+    """The classifier's source/library are pulled verbatim from the Profile JSON."""
+    profile_json = json.dumps(
+        {
+            "hotspots": [
+                {
+                    "function": "folly::futures::detail::FutureImpl::then",
+                    "source": "open_source",
+                    "library": "folly",
+                },
+                {
+                    "function": "CustomerCustom::hashFeature",
+                    "source": "customer_custom",
+                    "library": "custom",
+                },
+            ]
+        }
+    )
+    assert AgentCore._classification_from_profile(profile_json) == [
+        {
+            "function": "folly::futures::detail::FutureImpl::then",
+            "source": "open_source",
+            "library": "folly",
+        },
+        {
+            "function": "CustomerCustom::hashFeature",
+            "source": "customer_custom",
+            "library": "custom",
+        },
+    ]
+
+
+def test_classification_from_profile_tolerates_malformed() -> None:
+    """Bad JSON or missing fields never raise; they yield an empty classification."""
+    assert AgentCore._classification_from_profile("not json") == []
+    assert AgentCore._classification_from_profile("{}") == []
+    assert AgentCore._classification_from_profile('{"hotspots": [{"function": "x"}]}') == []
+
+
+def test_analyze_profile_injects_deterministic_classification(monkeypatch: Any) -> None:
+    """The LLM response is merged with the deterministic classification injected."""
+    config = AgentConfig(api_key=None)
+    agent = AgentCore(config=config)
+    # Stub the LLM (no API key); the response omits hotspot_classification.
+    monkeypatch.setattr(agent, "_call_llm", lambda prompt: '{"bottleneck_type": "backend_bound"}')
+    profile_json = json.dumps(
+        {
+            "hotspots": [
+                {
+                    "function": "folly::futures::detail::FutureImpl::then",
+                    "source": "open_source",
+                    "library": "folly",
+                }
+            ]
+        }
+    )
+    analysis = agent.analyze_profile(profile_json)
+    assert analysis["bottleneck_type"] == "backend_bound"
+    assert analysis["hotspot_classification"] == [
+        {
+            "function": "folly::futures::detail::FutureImpl::then",
+            "source": "open_source",
+            "library": "folly",
+        }
+    ]
