@@ -31,9 +31,6 @@ def test_agent_core_prompt_loading() -> None:
     detail = (prompts_dir / "detail_fill.md").read_text()
     assert "project_name" in detail
 
-    evaluate = (prompts_dir / "evaluate_comparison.md").read_text()
-    assert "iteration_priority" in evaluate
-
 
 def test_agent_core_not_available_without_key() -> None:
     config = AgentConfig(api_key=None)

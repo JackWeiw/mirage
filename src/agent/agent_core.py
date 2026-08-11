@@ -197,12 +197,6 @@ class AgentCore:
         prompt = template.replace("{workflow_json}", workflow_json)
         return self._call_llm_json(prompt)
 
-    def evaluate_comparison(self, comparison_json: str) -> dict[str, Any]:
-        """Evaluate comparison report and recommend iteration adjustments."""
-        template = self._load_prompt("evaluate_comparison.md")
-        prompt = template.replace("{comparison_json}", comparison_json)
-        return self._call_llm_json(prompt)
-
     def run_full_chain(self, profile_json: str) -> dict[str, Any]:
         """Run the full prompt chain: analyze -> plan -> detail_fill."""
         logger.info("agent_chain_start")

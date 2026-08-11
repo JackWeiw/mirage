@@ -399,10 +399,12 @@ docs/superpowers/specs/ 2026-08-07-callstack-alignment-design.md        (NEW, th
   search that tunes `units`/`archetype`/`working_set` to converge Topdown
   targets. The `StructuralComparator` + ARM collect path delivered here is the
   measurement substrate Front B needs.
-- **Front C (auto-iteration):** wires the Agent's `evaluate_comparison` +
-  priority strategy (`decide_iteration_priority`) into a
-  `compare→adjust→regen` loop over the `SkeletonDescriptor` + `config.json`
-  (structural changes via descriptor; param changes via config — no regen).
+- **Front C (auto-iteration):** wires the priority strategy
+  (`decide_iteration_priority`) into a `compare→adjust→regen` loop over the
+  `SkeletonDescriptor` + `config.json` (structural changes via descriptor;
+  param changes via config — no regen). The LLM `evaluate_comparison` evaluator
+  was removed as dead code (YAGNI); Front C will re-introduce an evaluator
+  (LLM or deterministic) when the iteration loop lands.
 
 ---
 
