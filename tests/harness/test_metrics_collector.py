@@ -74,3 +74,55 @@ def test_stackcollapse_converts_perf_script_to_folded() -> None:
     folded = MetricsCollector._stackcollapse(perf_script)
     assert "main;process;folly::then 1" in folded
     assert "main;process 1" in folded
+
+
+def test_stackcollapse_excludes_headers_and_strips_addr_dso_offset() -> None:
+    # Realistic perf-script output: a sample header (comm pid [cpu] ts: event:)
+    # followed by indented call-chain lines "addr sym+offset (dso)". perf prints
+    # the leaf (IP) first, so file order is leaf -> root; this converter emits
+    # frames in that same file order (no reversal).
+    perf_script = (
+        "swapper 0 [000] 12345.678:  cpu-clock:\n"
+        "\t7ffffffbe012 folly::then+0x20 (/lib/libfolly.so)\n"
+        "\t7ffffffbe000 main+0x40 (/app/app.exe)\n"
+        "\n"
+        "swapper 0 [000] 12345.999:  cpu-clock:\n"
+        "\t7ffffffbe000 main+0x40 (/app/app.exe)\n"
+        "\t7ffffffbdff0 [unknown] ([unknown])\n"
+        "\n"
+        "swapper 0 [001] 12346.111:  cpu-clock:\n"
+        "\t7ffffffbe012 folly::then+0x20 (/lib/libfolly.so)\n"
+        "\t7ffffffbe000 main+0x40 (/app/app.exe)\n"
+    )
+    folded = MetricsCollector._stackcollapse(perf_script)
+
+    # Header text must never leak into a frame.
+    for forbidden in ("swapper", "cpu-clock", "12345", "12346", "[000]", "[001]"):
+        assert forbidden not in folded
+
+    # Addresses, dso annotations, and offsets must be stripped from frames.
+    assert "7ffffffbe012" not in folded
+    assert "7ffffffbe000" not in folded
+    assert "7ffffffbdff0" not in folded
+    assert "(/" not in folded
+    assert "+0x" not in folded
+
+    lines = folded.splitlines()
+    # Samples 1 and 3 share an identical stack -> merged with summed count 2.
+    assert "folly::then;main 2" in lines
+    # Sample 2 is a distinct stack -> count 1, [unknown] kept as a clean frame.
+    assert "main;[unknown] 1" in lines
+    assert len(lines) == 2
+
+
+def test_stackcollapse_merges_bare_duplicate_stacks() -> None:
+    # Synthetic (no addr/dso) input: two identical bare stacks must merge.
+    perf_script = "main\nprocess\n\nmain\nprocess\n\nmain\nprocess\n"
+    folded = MetricsCollector._stackcollapse(perf_script)
+    assert folded == "main;process 3"
+
+
+def test_stackcollapse_handles_missing_trailing_blank() -> None:
+    perf_script = "main\nfolly::then"
+    folded = MetricsCollector._stackcollapse(perf_script)
+    assert folded == "main;folly::then 1"
