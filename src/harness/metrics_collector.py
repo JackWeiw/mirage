@@ -1,7 +1,9 @@
 """Metrics Collector — collect and parse Topdown, flamegraph, and memory data."""
 
 import pathlib
+import re
 import subprocess
+from collections import Counter
 
 from ingestion.flamegraph_parser import FlamegraphParser
 from ingestion.topdown_parser import TopdownParser
@@ -95,24 +97,67 @@ class MetricsCollector:
         except (subprocess.TimeoutExpired, FileNotFoundError) as e:
             return CollectionResult(success=False, error=str(e))
 
+    # A perf-script sample header, e.g. "swapper 0 [000] 12345.678:  cpu-clock:".
+    # Distinguished from call-chain lines by the pid[/tid], optional [cpu], and
+    # the colon-terminated timestamp. Such lines must not become frames.
+    _SAMPLE_HEADER_RE = re.compile(r"^\S+\s+\d+(?:/\d+)?\s+(?:\[\d+\]\s+)?[\d.]+:\s")
+
+    # A realistic perf-script call-chain entry: "[addr] sym+offset (dso)".
+    # The address prefix is optional (some perf --fields modes omit it). We keep
+    # only the symbol and discard the address and the (dso) annotation.
+    _SYMBOL_LINE_RE = re.compile(r"^(?:\w+\s+)?(?P<sym>\S+)\s+\([^)]+\)\s*$")
+
+    # Trailing "+0x..." offset on a symbol; stripped to match folded-stack
+    # convention (stackcollapse-perf.pl strips offsets by default).
+    _OFFSET_RE = re.compile(r"\+0x[0-9a-fA-F]+$")
+
+    @staticmethod
+    def _extract_frame(line: str) -> str:
+        """Return the frame name for a single perf-script call-chain line.
+
+        Lines in the realistic "addr sym+offset (dso)" form contribute only the
+        symbol (address and dso dropped, trailing offset stripped). Bare symbol
+        lines (no address/dso) are returned verbatim so synthetic/legacy input
+        keeps working.
+        """
+        match = MetricsCollector._SYMBOL_LINE_RE.match(line)
+        symbol = match.group("sym") if match else line
+        return MetricsCollector._OFFSET_RE.sub("", symbol)
+
     @staticmethod
     def _stackcollapse(perf_script_output: str) -> str:
-        """Minimal perf-script -> folded-stack converter (frame;frame count)."""
-        lines: list[str] = []
+        """Convert perf-script output to folded stacks ("frame;frame count").
+
+        Sample header lines (comm pid/tid [cpu] timestamp: event:) are excluded
+        from the stack. Call-chain entries contribute only the symbol (address,
+        dso, and "+0x..." offset are dropped). Stacks are emitted in file order
+        (no reversal of the perf call chain), and identical stacks are merged
+        with summed sample counts, matching stackcollapse-perf.pl semantics.
+        """
+        counts: Counter[str] = Counter()
         stack: list[str] = []
+
+        def _flush() -> None:
+            if stack:
+                counts[";".join(stack)] += 1
+                stack.clear()
+
         for raw in perf_script_output.splitlines():
             line = raw.strip()
             if not line:
-                if stack:
-                    lines.append(";".join(stack) + " 1")
-                    stack = []
+                _flush()
                 continue
-            if line.startswith("#") or "\t" in line:
+            if line.startswith("#"):
                 continue
-            stack.append(line)
-        if stack:
-            lines.append(";".join(stack) + " 1")
-        return "\n".join(lines)
+            if MetricsCollector._SAMPLE_HEADER_RE.match(line):
+                # A header opens a new sample; finalize the previous stack.
+                _flush()
+                continue
+            frame = MetricsCollector._extract_frame(line)
+            if frame:
+                stack.append(frame)
+        _flush()
+        return "\n".join(f"{frames} {count}" for frames, count in counts.items())
 
     def parse_topdown_file(self, filepath: pathlib.Path) -> Profile:
         """Parse a previously collected Topdown JSON file."""
