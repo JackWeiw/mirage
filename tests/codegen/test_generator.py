@@ -92,3 +92,46 @@ def test_custom_leaf_directly_under_service_is_not_dropped(tmp_path: pathlib.Pat
     service_cpp = (tmp_path / "service.cpp").read_text()
     assert any(p.name.endswith("_synth.h") for p in tmp_path.iterdir())
     assert "_custom_synth();" in service_cpp
+
+
+def test_generate_from_module_graph_emits_module_files(tmp_path: pathlib.Path) -> None:
+    from codegen.call_tree import CallSpec, SelfWork
+    from codegen.module_graph import FunctionSignature, ModuleDescriptor, ModuleGraph
+
+    put = FunctionSignature(
+        function="put",
+        namespace="foo::store",
+        call_spec=CallSpec(includes=[], statement="put()", setup=""),
+        declaration="void put(int)",
+        self_work=SelfWork(kind="synthesis", archetype="compute", units=10),
+    )
+    lookup = FunctionSignature(
+        function="lookup",
+        namespace="foo::index",
+        call_spec=CallSpec(includes=["store.h"], statement="lookup()", setup=""),
+        declaration="void lookup(int)",
+        self_work=SelfWork(kind="synthesis", archetype="compute", units=10),
+    )
+    graph = ModuleGraph(
+        project_name="demo",
+        modules=[
+            ModuleDescriptor(
+                name="store", namespace="foo::store", public_interface=[put], depends_on=[]
+            ),
+            ModuleDescriptor(
+                name="index",
+                namespace="foo::index",
+                public_interface=[lookup],
+                depends_on=["store"],
+            ),
+        ],
+    )
+    out = WorkloadGenerator().generate_from_module_graph(graph, tmp_path)
+    assert (out / "store.h").exists()
+    assert (out / "store.cpp").exists()
+    assert (out / "index.h").exists()
+    assert (out / "index.cpp").exists()
+    assert '#include "store.h"' in (out / "index.cpp").read_text()
+    cmake = (out / "CMakeLists.txt").read_text()
+    assert "store.cpp" in cmake
+    assert "index.cpp" in cmake

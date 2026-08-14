@@ -1,0 +1,10 @@
+// Implementation for module {{ name }}
+#include "{{ name }}.h"
+{% for inc in impl_includes %}
+#include {{ inc }}
+{% endfor %}
+
+{% for body in impl_bodies %}
+{{ body }}
+
+{% endfor %}

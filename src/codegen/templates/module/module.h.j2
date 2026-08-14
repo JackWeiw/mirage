@@ -1,0 +1,9 @@
+// Public interface for module {{ name }} (namespace {{ namespace }})
+#pragma once
+{% for dep in dep_headers %}
+#include {{ dep }}
+{% endfor %}
+
+{% for sig in public %}
+{{ sig.declaration or (sig.function + "()") }};
+{% endfor %}

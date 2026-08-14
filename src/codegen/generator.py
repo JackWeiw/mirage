@@ -3,10 +3,13 @@
 import pathlib
 from typing import Any
 
+import jinja2
+
 from codegen.behavior_gen import BehaviorGenerator
 from codegen.call_tree import CallTreeNode, SkeletonDescriptor
 from codegen.catalog import OpenSourceAPICatalog
 from codegen.knob_gen import KnobGenerator
+from codegen.module_graph import ModuleDescriptor, ModuleGraph
 from codegen.scaffold_gen import ScaffoldGenerator
 from codegen.skeleton_gen import ServiceSkeletonGen
 
@@ -26,6 +29,7 @@ class WorkloadGenerator:
         self.behavior = BehaviorGenerator()
         self.knob = KnobGenerator()
         self.catalog = OpenSourceAPICatalog()
+        self._module_env_cache: jinja2.Environment | None = None
 
     def generate_from_descriptor(
         self, desc: SkeletonDescriptor, output_dir: pathlib.Path
@@ -73,6 +77,86 @@ class WorkloadGenerator:
             for lib in sorted(libs)
         ]
         return deps, sorted(headers)
+
+    def generate_from_module_graph(
+        self, graph: ModuleGraph, output_dir: pathlib.Path
+    ) -> pathlib.Path:
+        """Emit modular C++ from a ModuleGraph (P1, single-threaded).
+
+        Two phases: contracts (module.h) before impls (module.cpp) — the seam
+        P3 fan-out will exploit. Modules are emitted in dependency (topological)
+        order so every header a module includes already exists on disk.
+        """
+        output_dir.mkdir(parents=True, exist_ok=True)
+        env = self._module_env()
+        ordered = self._topo_order(graph)
+        impl_files: list[str] = []
+
+        # Phase 1: contracts (headers).
+        for mod in ordered:
+            dep_headers = [f'"{dep}.h"' for dep in mod.depends_on]
+            content: str = env.get_template("module/module.h.j2").render(
+                name=mod.name,
+                namespace=mod.namespace,
+                dep_headers=dep_headers,
+                public=mod.public_interface,
+            )
+            (output_dir / f"{mod.name}.h").write_text(content)
+
+        # Phase 2: implementations.
+        for mod in ordered:
+            sigs = [*mod.public_interface, *mod.internal_functions]
+            bodies = [self.behavior._render_for_module(sig, env) for sig in sigs]
+            impl_includes = sorted({f'"{inc}"' for sig in sigs for inc in sig.call_spec.includes})
+            content = env.get_template("module/module.cpp.j2").render(
+                name=mod.name, impl_includes=impl_includes, impl_bodies=bodies
+            )
+            (output_dir / f"{mod.name}.cpp").write_text(content)
+            impl_files.append(f"{mod.name}.cpp")
+
+        scaffold_context = {
+            "project_name": graph.project_name,
+            "compile_flags": "-O2 -march=armv8.2-a -fno-inline-small-functions",
+            "dependencies": [],
+            "dep_headers": [],
+            "stages": [],
+            "extra_sources": impl_files,
+            "config": graph.config,
+        }
+        self.scaffold.generate(scaffold_context, output_dir)
+        self.knob.generate_config(graph.config, output_dir / "config.json")
+        return output_dir
+
+    def _topo_order(self, graph: ModuleGraph) -> list[ModuleDescriptor]:
+        """Return modules in dependency order (deps before dependents)."""
+        by_name = {m.name: m for m in graph.modules}
+        order: list[ModuleDescriptor] = []
+        visited: set[str] = set()
+
+        def visit(name: str) -> None:
+            if name in visited:
+                return
+            visited.add(name)
+            mod = by_name.get(name)
+            if mod is None:
+                return
+            for dep in mod.depends_on:
+                visit(dep)
+            order.append(mod)
+
+        for module in graph.modules:
+            visit(module.name)
+        return order
+
+    def _module_env(self) -> jinja2.Environment:
+        """Lazily build (and cache) a Jinja2 env over the codegen template dir."""
+        if self._module_env_cache is None:
+            template_dir = pathlib.Path(__file__).parent / "templates"
+            self._module_env_cache = jinja2.Environment(
+                loader=jinja2.FileSystemLoader(str(template_dir)),
+                keep_trailing_newline=True,
+            )
+        return self._module_env_cache
 
     def generate(self, instruction: dict[str, Any], output_dir: pathlib.Path) -> pathlib.Path:
         """Generate a complete workload project from a generation instruction.

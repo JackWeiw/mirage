@@ -8,6 +8,7 @@ from typing import Any
 import jinja2
 
 from codegen.call_tree import SkeletonDescriptor, service_node_of
+from codegen.module_graph import FunctionSignature
 from codegen.skeleton_gen import sanitize_identifier
 from codegen.strategies.base import StrategyRegistry
 
@@ -106,3 +107,50 @@ class BehaviorGenerator:
             (output_dir / filename).write_text(content)
             files.append(filename)
         return files
+
+    def _render_for_module(self, sig: FunctionSignature, env: jinja2.Environment) -> str:
+        """Render one function's implementation body for module.cpp.
+
+        Maps the signature's ``self_work`` (kind + archetype) to a strategy
+        registry name — *not* ``self_work.kind`` directly, since the registry
+        holds ``compute_synthesis``/``memory_synthesis``/``direct_call``/
+        ``mixed`` while ``kind`` is ``synthesis``/``real_call``/``self_budget``.
+        """
+        strategy_name = _strategy_for_sig(sig)
+        if strategy_name is None:
+            return sig.call_spec.statement or f"// {sig.function} body"
+        stage = _stage_for_sig(sig, strategy_name)
+        return StrategyRegistry.get(strategy_name).render_def(stage, env)
+
+
+def _strategy_for_sig(sig: FunctionSignature) -> str | None:
+    """Map a signature's self_work to a strategy registry name, or None."""
+    kind = sig.self_work.kind
+    if kind == "real_call":
+        return "direct_call"
+    if kind == "synthesis":
+        if sig.self_work.archetype == "memory":
+            return "memory_synthesis"
+        return "compute_synthesis"
+    return None  # self_budget / unknown -> fall back to a stub body
+
+
+def _stage_for_sig(sig: FunctionSignature, strategy_name: str) -> dict[str, object]:
+    """Build a render-stage dict for a module function."""
+    config: dict[str, object] = {
+        **sig.self_work.config,
+        "archetype": sig.self_work.archetype,
+        "iterations": sig.self_work.units,
+    }
+    stage: dict[str, object] = {
+        "stage_name": sig.function,
+        "strategies": [{"strategy": strategy_name, "synthesis_config": config}],
+    }
+    if strategy_name == "direct_call":
+        first_strategy = stage["strategies"]
+        assert isinstance(first_strategy, list)
+        first_strategy[0]["function"] = sig.function
+        first_strategy[0]["library"] = ""
+        stage["dep_headers"] = list(sig.call_spec.includes)
+        stage["call_statement"] = sig.call_spec.statement or f"{sig.function}();"
+    return stage
