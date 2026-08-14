@@ -79,8 +79,23 @@ class ModuleGraphBuilder:
             modules[caller].depends_on.append(_module_name(callee))
 
         graph = ModuleGraph(project_name=project_name, modules=list(modules.values()))
+        self._fail_on_name_collision(graph)
         self._fail_on_cycle(graph)
         return graph
+
+    def _fail_on_name_collision(self, graph: ModuleGraph) -> None:
+        """Two distinct namespaces can share a last segment (``foo::store`` and
+        ``bar::store`` both collapse to ``store``), which would silently drop a
+        module from codegen (same output filename). P1 fails loud; P2 will
+        disambiguate names instead.
+        """
+        names = [m.name for m in graph.modules]
+        dupes = {n for n in names if names.count(n) > 1}
+        if dupes:
+            raise ValueError(
+                f"module name collision (ambiguous last namespace segment, "
+                f"needs P2 disambiguation): {sorted(dupes)}"
+            )
 
     def _fail_on_cycle(self, graph: ModuleGraph) -> None:
         by_name = {m.name: m for m in graph.modules}

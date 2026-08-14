@@ -135,3 +135,51 @@ def test_generate_from_module_graph_emits_module_files(tmp_path: pathlib.Path) -
     cmake = (out / "CMakeLists.txt").read_text()
     assert "store.cpp" in cmake
     assert "index.cpp" in cmake
+
+
+def test_builder_to_generator_decl_def_match(tmp_path: pathlib.Path) -> None:
+    """End-to-end: Profile -> ModuleGraphBuilder -> generate_from_module_graph.
+
+    Regression for the decl/def name mismatch and the qualified-name-at-file-
+    scope bugs: every header prototype must be unqualified (no ``::``) and the
+    prototype name must be defined in the matching .cpp.
+    """
+    import re
+
+    from codegen.module_graph_builder import ModuleGraphBuilder
+    from profile.profile_schema import HotspotFunction, Profile, ProfileMetadata
+
+    hotspot = HotspotFunction(
+        function="foo::index::lookup(int)",
+        library="custom",
+        source="customer_custom",
+        self_pct=10.0,
+        cumulative_pct=100.0,
+        call_path=["main", "foo::index::lookup(int)", "foo::store::put(int)"],
+    )
+    profile = Profile(
+        metadata=ProfileMetadata(customer="c", date="2026-08-14"),
+        hotspots=[hotspot],
+    )
+    graph = ModuleGraphBuilder().build(profile, "demo")
+    out = WorkloadGenerator().generate_from_module_graph(graph, tmp_path)
+
+    # No namespace-qualified function declaration at file scope in the module
+    # headers (a comment mentioning the namespace is fine; ``void foo::bar::f()``
+    # is not — it's ill-formed C++). Scaffold headers like config_loader.h
+    # legitimately use std::/nlohmann:: so we check only the module headers.
+    qualified_decl = re.compile(r"void\s+\S*::")
+    for module_name in ("index", "store"):
+        header = out / f"{module_name}.h"
+        assert header.exists()
+        text = header.read_text()
+        assert not qualified_decl.search(text), f"qualified declaration in {header.name}:\n{text}"
+
+    # The prototype declared in index.h must be defined (with a body) in index.cpp.
+    index_h = (out / "index.h").read_text()
+    index_cpp = (out / "index.cpp").read_text()
+    match = re.search(r"void\s+(\w+)\s*\(", index_h)
+    assert match, f"no void prototype in index.h:\n{index_h}"
+    proto_name = match.group(1)
+    assert f"void {proto_name}(" in index_cpp
+    assert "{" in index_cpp

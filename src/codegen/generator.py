@@ -95,11 +95,14 @@ class WorkloadGenerator:
         # Phase 1: contracts (headers).
         for mod in ordered:
             dep_headers = [f'"{dep}.h"' for dep in mod.depends_on]
+            decls = [
+                self.behavior._render_decl_for_module(sig, env) for sig in mod.public_interface
+            ]
             content: str = env.get_template("module/module.h.j2").render(
                 name=mod.name,
                 namespace=mod.namespace,
                 dep_headers=dep_headers,
-                public=mod.public_interface,
+                decls=decls,
             )
             (output_dir / f"{mod.name}.h").write_text(content)
 

@@ -122,6 +122,22 @@ class BehaviorGenerator:
         stage = _stage_for_sig(sig, strategy_name)
         return StrategyRegistry.get(strategy_name).render_def(stage, env)
 
+    def _render_decl_for_module(self, sig: FunctionSignature, env: jinja2.Environment) -> str:
+        """Render one public function's prototype for module.h.
+
+        The prototype must match the definition ``_render_for_module`` emits
+        (same strategy, same synthesized name) so header and cpp link. We use
+        the strategy's ``render_decl`` rather than ``sig.declaration``: the
+        latter is the customer's demangled (often namespace-qualified)
+        prototype, which is neither the function we synthesize nor valid at
+        file scope.
+        """
+        strategy_name = _strategy_for_sig(sig)
+        if strategy_name is None:
+            return f"void {sig.function}();"
+        stage = _stage_for_sig(sig, strategy_name)
+        return StrategyRegistry.get(strategy_name).render_decl(stage, env)
+
 
 def _strategy_for_sig(sig: FunctionSignature) -> str | None:
     """Map a signature's self_work to a strategy registry name, or None."""

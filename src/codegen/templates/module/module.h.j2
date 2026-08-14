@@ -4,6 +4,6 @@
 #include {{ dep }}
 {% endfor %}
 
-{% for sig in public %}
-{{ sig.declaration or (sig.function + "()") }};
+{% for decl in decls %}
+{{ decl }}
 {% endfor %}

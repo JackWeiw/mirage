@@ -55,3 +55,11 @@ def test_cycle_fails_loud() -> None:
     paths = [["a::f()", "b::g()", "a::h()"]]
     with pytest.raises(ValueError, match="cycle"):
         ModuleGraphBuilder(classifier=FunctionClassifier()).build(_profile(paths), "demo")
+
+
+def test_name_collision_fails_loud() -> None:
+    # foo::store and bar::store both collapse to module "store" — P1 rejects
+    # this rather than silently dropping one module's file.
+    paths = [["main", "foo::store::put()", "bar::store::save()"]]
+    with pytest.raises(ValueError, match="module name collision"):
+        ModuleGraphBuilder(classifier=FunctionClassifier()).build(_profile(paths), "demo")
