@@ -1,0 +1,29 @@
+// Compute synthesis definition: {{ stage_name }} (archetype: {{ archetype }})
+#include <algorithm>
+#include <cstdint>
+#include <vector>
+
+void {{ stage_name }}_compute(int iterations) {
+    volatile uint64_t acc = 0;
+    {%- if archetype == 'hash' %}
+    for (int i = 0; i < iterations; ++i) { acc ^= uint64_t(0x9e3779b97f4a7c15) + (acc << 6) + (acc >> 2); acc += i; }
+    {%- elif archetype == 'matmul' %}
+    {
+        constexpr int N = 8; int64_t a[N * N] = {0}, b[N * N] = {1}, c[N * N] = {0};
+        for (int it = 0; it < iterations; ++it)
+            for (int i = 0; i < N; ++i) for (int k = 0; k < N; ++k) for (int j = 0; j < N; ++j)
+                c[i * N + j] += a[i * N + k] * b[k * N + j];
+        acc = static_cast<uint64_t>(c[0]);
+    }
+    {%- elif archetype == 'sort' %}
+    {
+        std::vector<int> v(iterations % 1024 + 1, 0);
+        for (int i = 0; i < iterations; ++i) { v[i % v.size()] = i; std::sort(v.begin(), v.end()); }
+    }
+    {%- elif archetype == 'branch' %}
+    for (int i = 0; i < iterations; ++i) { if ((i ^ acc) & 1) acc += i; else acc -= i; }
+    {%- else %}
+    for (int i = 0; i < iterations; ++i) { acc += uint64_t(i) * uint64_t(0x100000001b3); }
+    {%- endif %}
+    (void)acc;
+}

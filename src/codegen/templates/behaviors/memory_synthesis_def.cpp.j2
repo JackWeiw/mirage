@@ -1,0 +1,41 @@
+// Memory synthesis definition: {{ stage_name }}
+// Simulates memory-intensive behavior ({{ synthesis_config.access_pattern | default('random') }})
+#include <vector>
+#include <random>
+#include <cstdint>
+
+void {{ stage_name }}_memory(int iterations) {
+    // Memory-intensive access — {{ synthesis_config.access_pattern | default('random') }} pattern
+    // Working set: {{ synthesis_config.working_set_mb | default(64) }} MB
+    const size_t working_set_bytes = {{ synthesis_config.working_set_mb | default(64) }} * 1024 * 1024;
+    const size_t element_count = working_set_bytes / sizeof(uint64_t);
+
+    static std::vector<uint64_t> data(element_count, 0);
+    if (data.empty()) data.resize(element_count, 42);
+
+    std::random_device rd;
+    std::mt19937 gen(rd());
+
+{% if synthesis_config.access_pattern == 'random' %}
+    std::uniform_int_distribution<size_t> dist(0, element_count - 1);
+    for (int i = 0; i < iterations; ++i) {
+        size_t idx = dist(gen);
+        data[idx] += i;
+    }
+{% elif synthesis_config.access_pattern == 'sequential' %}
+    for (int i = 0; i < iterations; ++i) {
+        size_t idx = i % element_count;
+        data[idx] += i;
+    }
+{% else %}
+    // Mixed access pattern
+    std::uniform_int_distribution<size_t> dist(0, element_count - 1);
+    for (int i = 0; i < iterations; ++i) {
+        if (i % 4 == 0) {
+            data[dist(gen)] += i;  // random
+        } else {
+            data[i % element_count] += i;  // sequential
+        }
+    }
+{% endif %}
+}

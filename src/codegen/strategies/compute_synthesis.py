@@ -25,5 +25,23 @@ class ComputeSynthesisStrategy(BehaviorStrategy):
         filename = f"{stage['stage_name']}.h"
         return filename, content
 
+    def render_decl(self, stage: dict[str, Any], env: jinja2.Environment) -> str:
+        template = env.get_template("behaviors/compute_synthesis_decl.h.j2")
+        config = stage.get("strategies", [{}])[0].get("synthesis_config", {})
+        archetype = config.get("archetype") or config.get("compute_type") or "compute"
+        decl: str = template.render(
+            stage_name=stage["stage_name"], archetype=archetype, synthesis_config=config
+        )
+        return decl
+
+    def render_def(self, stage: dict[str, Any], env: jinja2.Environment) -> str:
+        template = env.get_template("behaviors/compute_synthesis_def.cpp.j2")
+        config = stage.get("strategies", [{}])[0].get("synthesis_config", {})
+        archetype = config.get("archetype") or config.get("compute_type") or "compute"
+        definition: str = template.render(
+            stage_name=stage["stage_name"], archetype=archetype, synthesis_config=config
+        )
+        return definition
+
 
 StrategyRegistry.register(ComputeSynthesisStrategy())
