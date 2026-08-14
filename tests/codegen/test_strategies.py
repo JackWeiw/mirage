@@ -128,6 +128,25 @@ def test_registry_get_unknown() -> None:
         StrategyRegistry.get("does_not_exist")
 
 
+def test_render_decl_def_default_shim_concat_matches_render() -> None:
+    """Default render_def delegates to render(); render_decl is empty."""
+    env = _make_env()
+    stage = {
+        "stage_name": "s",
+        "strategies": [
+            {
+                "strategy": "compute_synthesis",
+                "synthesis_config": {"compute_type": "hash", "iterations": 7},
+            },
+        ],
+    }
+    _name, content = ComputeSynthesisStrategy().render(stage, env)
+    decl = ComputeSynthesisStrategy().render_decl(stage, env)
+    definition = ComputeSynthesisStrategy().render_def(stage, env)
+    assert decl == ""  # default shim: no declarations split out yet
+    assert definition == content  # default shim: render() content is the definition
+
+
 # --- auto-discovery -----------------------------------------------------------
 
 _FAKE_STRATEGY_SRC = textwrap.dedent(

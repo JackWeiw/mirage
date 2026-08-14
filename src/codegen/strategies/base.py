@@ -31,6 +31,26 @@ class BehaviorStrategy(ABC):
         """
         ...
 
+    def render_decl(self, stage: dict[str, Any], env: jinja2.Environment) -> str:
+        """Return the public declarations for module.h.
+
+        Default shim: the fused ``render()`` output is treated as the whole
+        definition, so no declarations are split out. Strategies override this
+        to emit header-side prototypes.
+        """
+        del env  # default shim ignores the environment
+        _ = stage
+        return ""
+
+    def render_def(self, stage: dict[str, Any], env: jinja2.Environment) -> str:
+        """Return the implementation for module.cpp.
+
+        Default shim: delegate to ``render()`` — the content half of the
+        ``(filename, content)`` tuple is the definition. Strategies override
+        this to emit a decl/def split.
+        """
+        return self.render(stage, env)[1]
+
 
 class StrategyRegistry:
     """Registry of behavior strategies. New strategies register themselves."""
