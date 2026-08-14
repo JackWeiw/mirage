@@ -1,6 +1,8 @@
 """Generate behavior implementation code using strategy registry."""
 
+import importlib
 import pathlib
+import pkgutil
 from typing import Any
 
 import jinja2
@@ -10,12 +12,30 @@ from codegen.skeleton_gen import sanitize_identifier
 from codegen.strategies.base import StrategyRegistry
 
 
+def discover_strategies(package: Any) -> None:
+    """Import every submodule of ``package`` to trigger self-registration.
+
+    Skips ``base`` and any ``_``-prefixed private modules. A submodule that
+    fails to import propagates the error (fail loud): a broken strategy must
+    surface at startup, not as a runtime ``KeyError``.
+    """
+    for module_info in pkgutil.iter_modules(package.__path__):
+        name = module_info.name
+        if name == "base" or name.startswith("_"):
+            continue
+        importlib.import_module(f"{package.__name__}.{name}")
+
+
 def auto_register() -> None:
-    """Import all strategy sub-modules to trigger their registration."""
-    from codegen.strategies.compute_synthesis import ComputeSynthesisStrategy  # noqa: F401
-    from codegen.strategies.direct_call import DirectCallStrategy  # noqa: F401
-    from codegen.strategies.memory_synthesis import MemorySynthesisStrategy  # noqa: F401
-    from codegen.strategies.mixed import MixedStrategy  # noqa: F401
+    """Import every strategy submodule to trigger its self-registration.
+
+    Discovers submodules of the ``codegen.strategies`` package automatically,
+    so adding a strategy is just dropping a module into the package — no import
+    line to maintain here.
+    """
+    import codegen.strategies as _strategies
+
+    discover_strategies(_strategies)
 
 
 class BehaviorGenerator:
