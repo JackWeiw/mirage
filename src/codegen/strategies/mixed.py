@@ -50,5 +50,21 @@ class MixedStrategy(BehaviorStrategy):
         )
         return filename, content
 
+    def render_decl(self, stage: dict[str, Any], env: jinja2.Environment) -> str:
+        decls: list[str] = []
+        for strat in stage.get("strategies", []):
+            name = strat.get("strategy")
+            if name in StrategyRegistry.available():
+                decls.append(StrategyRegistry.get(name).render_decl(stage, env))
+        return "\n".join(d for d in decls if d)
+
+    def render_def(self, stage: dict[str, Any], env: jinja2.Environment) -> str:
+        defs: list[str] = []
+        for strat in stage.get("strategies", []):
+            name = strat.get("strategy")
+            if name in StrategyRegistry.available():
+                defs.append(StrategyRegistry.get(name).render_def(stage, env))
+        return "\n\n".join(d for d in defs if d)
+
 
 StrategyRegistry.register(MixedStrategy())

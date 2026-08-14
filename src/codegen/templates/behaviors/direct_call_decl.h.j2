@@ -1,0 +1,6 @@
+// Direct call wrapper declaration: {{ stage_name }}
+// Calls open-source library function {{ function }} directly
+{% for dep_header in dep_headers %}
+#include <{{ dep_header }}>
+{% endfor %}
+void {{ stage_name }}_direct_call();

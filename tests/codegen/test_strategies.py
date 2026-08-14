@@ -12,7 +12,7 @@ import jinja2
 import pytest
 
 from codegen.behavior_gen import discover_strategies
-from codegen.strategies.base import StrategyRegistry
+from codegen.strategies.base import BehaviorStrategy, StrategyRegistry
 from codegen.strategies.compute_synthesis import ComputeSynthesisStrategy
 from codegen.strategies.direct_call import DirectCallStrategy
 from codegen.strategies.memory_synthesis import MemorySynthesisStrategy
@@ -126,6 +126,90 @@ def test_registry_available() -> None:
 def test_registry_get_unknown() -> None:
     with pytest.raises(KeyError, match="Unknown behavior strategy"):
         StrategyRegistry.get("does_not_exist")
+
+
+def test_render_decl_def_default_shim_concat_matches_render() -> None:
+    """Default render_def delegates to render(); render_decl is empty.
+
+    Verified on a minimal subclass that does NOT override the shim, so the
+    base-class default behavior is exercised (strategies with real overrides
+    are covered by the per-strategy decl/def tests below).
+    """
+
+    class _BareStrategy(BehaviorStrategy):
+        def strategy_name(self) -> str:
+            return "_bare"
+
+        def render(self, stage: dict[str, object], env: jinja2.Environment) -> tuple[str, str]:
+            return ("bare.h", "// bare body\n")
+
+    env = _make_env()
+    stage: dict[str, object] = {"stage_name": "s", "strategies": []}
+    bare = _BareStrategy()
+    _name, content = bare.render(stage, env)
+    assert bare.render_decl(stage, env) == ""  # default shim: no declarations
+    assert bare.render_def(stage, env) == content  # default shim: render() is the definition
+
+
+def test_compute_synthesis_decl_is_prototype() -> None:
+    env = _make_env()
+    stage = {
+        "stage_name": "calc",
+        "strategies": [
+            {
+                "strategy": "compute_synthesis",
+                "synthesis_config": {"archetype": "hash", "iterations": 7},
+            },
+        ],
+    }
+    decl = ComputeSynthesisStrategy().render_decl(stage, env)
+    assert "void calc_compute(int iterations" in decl
+    assert "{" not in decl  # declaration has no body
+
+
+def test_compute_synthesis_def_has_body() -> None:
+    env = _make_env()
+    stage = {
+        "stage_name": "calc",
+        "strategies": [
+            {
+                "strategy": "compute_synthesis",
+                "synthesis_config": {"archetype": "hash", "iterations": 7},
+            },
+        ],
+    }
+    definition = ComputeSynthesisStrategy().render_def(stage, env)
+    assert "void calc_compute(int iterations" in definition
+    assert "{" in definition and "}" in definition
+
+
+def test_memory_synthesis_decl_is_prototype() -> None:
+    env = _make_env()
+    stage = {
+        "stage_name": "mem",
+        "strategies": [
+            {
+                "strategy": "memory_synthesis",
+                "synthesis_config": {"access_pattern": "sequential", "iterations": 4},
+            },
+        ],
+    }
+    decl = MemorySynthesisStrategy().render_decl(stage, env)
+    assert "void mem_memory(int iterations" in decl
+    assert "{" not in decl
+
+
+def test_direct_call_decl_is_prototype() -> None:
+    env = _make_env()
+    stage = {
+        "stage_name": "call",
+        "strategies": [{"strategy": "direct_call", "function": "my_func", "library": "mylib"}],
+        "dep_headers": ["mylib/my_func.h"],
+        "call_statement": "my_func(42)",
+    }
+    decl = DirectCallStrategy().render_decl(stage, env)
+    assert "void call_direct_call()" in decl
+    assert "{" not in decl
 
 
 # --- auto-discovery -----------------------------------------------------------
