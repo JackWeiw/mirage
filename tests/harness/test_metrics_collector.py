@@ -2,7 +2,10 @@
 
 import json
 import pathlib
+import subprocess
 import tempfile
+
+import pytest
 
 from harness.metrics_collector import MetricsCollector
 
@@ -59,6 +62,67 @@ def test_collector_collect_topdown_no_devkit() -> None:
     result = collector.collect_topdown(pathlib.Path("/tmp/out.json"))
     assert result.success is False
     assert "devkit_cmd not configured" in result.error
+
+
+def test_collect_topdown_builds_correct_argv(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Regression: the old CLI was [devkit, "topdown", "--duration", N, "--output",
+    # path]. The real devkit CLI (proven by the spike) is tuner top-down -d -i -p
+    # with the report on stdout.
+    collector = MetricsCollector(devkit_cmd="/opt/devkit/bin/devkit")
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured["cmd"] = cmd
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout="Backend Bound 72.01", stderr=""
+        )
+
+    monkeypatch.setattr("harness.metrics_collector.subprocess.run", fake_run)
+    out = tmp_path / "topdown.txt"
+    result = collector.collect_topdown(out, duration=20, interval=3, pid=123)
+
+    assert captured["cmd"] == [
+        "/opt/devkit/bin/devkit",
+        "tuner",
+        "top-down",
+        "-d",
+        "20",
+        "-i",
+        "3",
+        "-p",
+        "123",
+    ]
+    # devkit emits the report on stdout; collect_topdown persists it.
+    assert out.read_text() == "Backend Bound 72.01"
+    assert result.success
+    assert result.topdown_path == str(out)
+
+
+def test_collect_topdown_no_pid_omits_p_flag(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    collector = MetricsCollector(devkit_cmd="/opt/devkit/bin/devkit")
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured["cmd"] = cmd
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("harness.metrics_collector.subprocess.run", fake_run)
+    collector.collect_topdown(tmp_path / "topdown.txt", duration=10, pid=None)
+    cmd = captured["cmd"]
+    assert isinstance(cmd, list)
+    assert "-p" not in cmd
+    assert "tuner" in cmd and "top-down" in cmd
+
+
+def test_parse_topdown_file_routes_txt() -> None:
+    collector = MetricsCollector()
+    profile = collector.parse_topdown_file(DATA_DIR / "sample_topdown.txt")
+    assert profile.topdown is not None
+    assert profile.topdown.backend_bound == 72.01
 
 
 def test_collect_flamegraph_no_perf_returns_failure(tmp_path: pathlib.Path) -> None:
