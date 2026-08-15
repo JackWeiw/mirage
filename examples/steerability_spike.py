@@ -315,6 +315,28 @@ def _collect_topdown_devkit(
     return True, None
 
 
+def _find_executable(build_dir: pathlib.Path, expected_name: str) -> pathlib.Path | None:
+    """Find the compiled workload executable in build_dir.
+
+    Prefer the CMake target name (add_executable(<project_name>)); fall back to
+    the first executable regular file, which excludes the Makefile, .o/.txt/
+    .cmake artifacts (none are executable). Returns the path (not yet absolute)
+    or None -- callers should resolve() it.
+    """
+    named = build_dir / expected_name
+    if named.is_file() and os.access(named, os.X_OK):
+        return named
+    for cand in build_dir.rglob("*"):
+        if (
+            cand.is_file()
+            and os.access(cand, os.X_OK)
+            and cand.suffix not in [".o", ".cmake", ".txt", ".json", ".make", ".h", ".cpp"]
+            and not cand.name.startswith(".")
+        ):
+            return cand
+    return None
+
+
 def run_one_point(
     point_id: str,
     instr: dict[str, Any],
@@ -339,29 +361,27 @@ def run_one_point(
     if not build.success:
         return {"point_id": point_id, "error": f"build_failed: {build.stderr[:300]}"}
 
-    # CMake names the executable after project_name (add_executable(<name>)),
-    # so locate it directly and verify it is executable. BuildRunner's binary
-    # detection picks the first suffixless file in the build tree, which on
-    # this box is the Makefile (no extension -> not excluded) -- taskset then
-    # tries to exec the Makefile (rc=127). The executable-bit check rules the
-    # Makefile out. (BuildRunner's rglob pick is a production bug; flagged as a
-    # follow-up so the auto-loop doesn't hit it too.)
-    binary = project_dir / "build" / instr["project_name"]
-    if not (binary.is_file() and os.access(binary, os.X_OK)):
-        cand = pathlib.Path(build.binary_path) if build.binary_path else None
-        if cand and cand.is_file() and os.access(cand, os.X_OK):
-            binary = cand
-        else:
-            return {
-                "point_id": point_id,
-                "error": (
-                    f"binary_not_found: expected {binary} "
-                    f"(build.binary_path={build.binary_path}); "
-                    f"build.stderr[:200]={build.stderr[:200]}"
-                ),
-            }
-    binary = str(binary)
-    config_path = str(project_dir / "config.json")
+    # Locate the executable and pass ABSOLUTE paths. taskset execs the binary
+    # path relative to its own cwd (Popen cwd=project_dir), so a relative path
+    # like spike_out/<point>/build/steerability_spike mis-resolves under cwd to
+    # spike_out/<point>/spike_out/<point>/build/... and fails with ENOENT
+    # (rc=127) -- even though the file exists from python's cwd. Absolute paths
+    # make the binary location independent of the child's cwd. The executable
+    # bit also rules out the Makefile (not executable), which BuildRunner's
+    # rglob pick returns on this box (flagged as a production follow-up).
+    binary_path = _find_executable(project_dir / "build", instr["project_name"])
+    if binary_path is None:
+        listing = sorted(p.name for p in (project_dir / "build").rglob("*") if p.is_file())
+        return {
+            "point_id": point_id,
+            "error": (
+                f"binary_not_found in {project_dir / 'build'} "
+                f"(expected {instr['project_name']}); files={listing[:20]}; "
+                f"build.stderr[:200]={build.stderr[:200]}"
+            ),
+        }
+    binary = str(binary_path.resolve())
+    config_path = str((project_dir / "config.json").resolve())
 
     # Launch the workload pinned to a CPU range (taskset) so its topdown
     # counters (attributed via -p <pid>) are measured on exactly the core it
