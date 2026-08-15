@@ -1,8 +1,9 @@
-"""Parse Topdown analysis data (devkit JSON/CSV) into Profile fields."""
+"""Parse Topdown analysis data (devkit JSON/CSV/TEXT) into Profile fields."""
 
 import csv
 import json
 import pathlib
+import re
 
 from profile.profile_schema import (
     MemoryProfile,
@@ -14,6 +15,17 @@ from profile.profile_schema import (
     TopdownL2BadSpec,
     TopdownL2Frontend,
     TopdownL2Retiring,
+)
+
+# devkit `tuner top-down` emits a human-readable TEXT table, e.g.:
+#   Backend Bound                    72.01    --
+#   Frontend Bound                   17.59    --
+#   Bad Speculation                   3.01    --
+#   Retiring                           7.38    --
+# Pull the four L1 category percentages (case-insensitive label, first float).
+_TOPDOWN_L1_RE = re.compile(
+    r"^\s*(backend bound|frontend bound|bad speculation|retiring)\s+([\d.]+)",
+    re.IGNORECASE | re.MULTILINE,
 )
 
 
@@ -129,4 +141,46 @@ class TopdownParser:
             topdown=topdown_l1,
             topdown_l2=topdown_l2,
             memory=memory,
+        )
+
+    def parse_text(self, filepath: pathlib.Path) -> Profile:
+        """Parse devkit `tuner top-down` TEXT report.
+
+        devkit emits a human-readable table (not JSON/CSV), e.g.::
+
+            Backend Bound                    72.01    --
+            Frontend Bound                   17.59    --
+            Bad Speculation                   3.01    --
+            Retiring                           7.38    --
+
+        Values are PERCENTAGES (devkit native). L2 sub-metrics and memory
+        bandwidth are not present in the text report, so topdown_l2 and memory
+        are None. NOTE: parse_json/parse_csv fixtures historically use FRACTIONS
+        (0.40) while this returns percentages (72.01); that units inconsistency
+        is tracked separately and not normalized here.
+
+        Raises:
+            FileNotFoundError: If filepath doesn't exist.
+            ValueError: If no L1 lines are found (so a format change surfaces
+                instead of silently returning zeros).
+        """
+        if not filepath.exists():
+            raise FileNotFoundError(f"Topdown text file not found: {filepath}")
+        text = filepath.read_text(errors="replace")
+        found = {label.lower(): float(value) for label, value in _TOPDOWN_L1_RE.findall(text)}
+        if not found:
+            raise ValueError(
+                f"No Topdown L1 lines found in {filepath}; first 200 chars: {text[:200]!r}"
+            )
+        topdown_l1 = TopdownL1(
+            frontend_bound=found.get("frontend bound", 0.0),
+            backend_bound=found.get("backend bound", 0.0),
+            bad_speculation=found.get("bad speculation", 0.0),
+            retiring=found.get("retiring", 0.0),
+        )
+        return Profile(
+            metadata=ProfileMetadata(customer="devkit", date="unknown"),
+            topdown=topdown_l1,
+            topdown_l2=None,
+            memory=None,
         )

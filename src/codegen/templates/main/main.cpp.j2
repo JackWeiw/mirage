@@ -32,7 +32,9 @@ int main(int argc, char* argv[]) {
 
     while (std::chrono::steady_clock::now() < warmup_end) {
         {% for stage in stages %}
-        {{ stage.loop_call }}
+        for (int _r = 0; _r < int({{ stage.ratio_expr }} * {{ burst }}); ++_r) {
+            {{ stage.loop_call }}
+        }
         {% endfor %}
     }
 
@@ -47,7 +49,9 @@ int main(int argc, char* argv[]) {
 
     while (std::chrono::steady_clock::now() < measure_end) {
         {% for stage in stages %}
-        {{ stage.loop_call }}
+        for (int _r = 0; _r < int({{ stage.ratio_expr }} * {{ burst }}); ++_r) {
+            {{ stage.loop_call }}
+        }
         {% endfor %}
     }
 

@@ -3,7 +3,7 @@
 import pathlib
 
 import pydantic
-import pytest  # type: ignore[import-not-found]
+import pytest
 
 from ingestion.topdown_parser import TopdownParser
 
@@ -63,3 +63,43 @@ def test_parse_json_malformed_raises_validation_error() -> None:
     parser = TopdownParser()
     with pytest.raises(pydantic.ValidationError):
         parser.parse_json(DATA_DIR / "malformed_topdown.json")
+
+
+def test_parse_text_topdown_l1() -> None:
+    # devkit `tuner top-down` emits a TEXT report; values are PERCENTAGES.
+    parser = TopdownParser()
+    result = parser.parse_text(DATA_DIR / "sample_topdown.txt")
+    assert result.topdown is not None
+    assert result.topdown.backend_bound == 72.01
+    assert result.topdown.frontend_bound == 17.59
+    assert result.topdown.bad_speculation == 3.01
+    assert result.topdown.retiring == 7.38
+
+
+def test_parse_text_no_l2_no_memory() -> None:
+    parser = TopdownParser()
+    result = parser.parse_text(DATA_DIR / "sample_topdown.txt")
+    # The text report carries only L1; L2 and memory are not present.
+    assert result.topdown_l2 is None
+    assert result.memory is None
+
+
+def test_parse_text_file_not_found_raises() -> None:
+    parser = TopdownParser()
+    with pytest.raises(FileNotFoundError):
+        parser.parse_text(DATA_DIR / "nonexistent.txt")
+
+
+def test_parse_text_no_l1_lines_raises() -> None:
+    # A .txt with no recognizable L1 lines must surface, not return zeros.
+    import tempfile
+
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        f.write("nothing useful here\nno numbers\n")
+        path = pathlib.Path(f.name)
+    try:
+        parser = TopdownParser()
+        with pytest.raises(ValueError):
+            parser.parse_text(path)
+    finally:
+        path.unlink()

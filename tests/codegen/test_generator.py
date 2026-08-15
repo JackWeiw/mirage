@@ -54,6 +54,80 @@ def test_workload_generator_full_project() -> None:
     assert config["qps"] == 500
 
 
+def test_main_cpp_wires_ratio_burst_per_stage() -> None:
+    # compute_ratio/memory_ratio are runtime knobs that must actually drive the
+    # loop (RFC 0003 §4 spike proved them inert). Assert the rendered main.cpp
+    # scales each stage's call frequency by the right ratio and a burst factor.
+    gen = WorkloadGenerator()
+    output_dir = pathlib.Path(tempfile.mkdtemp())
+    instruction = {
+        "project_name": "ratio_sim",
+        "stages": [
+            {
+                "stage_name": "comp",
+                "implementation_strategy": "compute_synthesis",
+                "strategies": [
+                    {
+                        "strategy": "compute_synthesis",
+                        "synthesis_config": {"archetype": "hash", "iterations": 100},
+                    },
+                ],
+            },
+            {
+                "stage_name": "mem",
+                "implementation_strategy": "memory_synthesis",
+                "strategies": [
+                    {
+                        "strategy": "memory_synthesis",
+                        "synthesis_config": {"access_pattern": "random", "working_set_mb": 32},
+                    },
+                ],
+            },
+        ],
+        "config": {},
+    }
+    result_dir = gen.generate(instruction, output_dir)
+    main_cpp = (result_dir / "main.cpp").read_text()
+
+    # Burst defaults to 20 when absent from the instruction.
+    assert "cfg.compute_ratio * 20" in main_cpp
+    assert "cfg.memory_ratio * 20" in main_cpp
+    # Each stage's call is wrapped in a ratio-burst loop (whitespace-robust).
+    assert "int(cfg.compute_ratio * 20); ++_r)" in main_cpp
+    assert "int(cfg.memory_ratio * 20); ++_r)" in main_cpp
+    assert "comp_compute();" in main_cpp
+    assert "mem_memory();" in main_cpp
+    # The ratio burst wraps both warmup and measurement loops (>= 2 each).
+    assert main_cpp.count("cfg.compute_ratio * 20") >= 2
+    assert main_cpp.count("cfg.memory_ratio * 20") >= 2
+
+
+def test_main_cpp_respects_custom_burst() -> None:
+    gen = WorkloadGenerator()
+    output_dir = pathlib.Path(tempfile.mkdtemp())
+    instruction = {
+        "project_name": "burst_sim",
+        "burst": 50,
+        "stages": [
+            {
+                "stage_name": "c",
+                "implementation_strategy": "compute_synthesis",
+                "strategies": [
+                    {
+                        "strategy": "compute_synthesis",
+                        "synthesis_config": {"archetype": "compute", "iterations": 10},
+                    }
+                ],
+            },
+        ],
+        "config": {},
+    }
+    result_dir = gen.generate(instruction, output_dir)
+    main_cpp = (result_dir / "main.cpp").read_text()
+    assert "cfg.compute_ratio * 50" in main_cpp
+    assert "cfg.compute_ratio * 20" not in main_cpp  # default not used
+
+
 def test_generate_from_descriptor_produces_skeleton_project(tmp_path: pathlib.Path) -> None:
     from codegen.call_tree import CallTreeBuilder
     from codegen.catalog import OpenSourceAPICatalog

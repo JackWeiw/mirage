@@ -28,24 +28,45 @@ class MetricsCollector:
         self.topdown_parser = TopdownParser()
         self.flamegraph_parser = FlamegraphParser()
 
-    def collect_topdown(self, output_path: pathlib.Path, duration: int = 60) -> CollectionResult:
-        """Collect Topdown data using devkit."""
+    def collect_topdown(
+        self,
+        output_path: pathlib.Path,
+        duration: int = 60,
+        interval: int = 3,
+        pid: int | None = None,
+    ) -> CollectionResult:
+        """Collect Topdown data using devkit.
+
+        Runs `devkit tuner top-down -d <dur> -i <int> [-p <pid>]` and writes the
+        TEXT report (emitted on stdout) to output_path. pid attributes the
+        topdown to a workload process; None collects system-wide. devkit forbids
+        -p together with --cpu, so core scoping is NOT done here -- pin the
+        workload with taskset in the runner instead.
+        """
         if self.devkit_cmd is None:
             logger.warning("devkit_not_configured")
             return CollectionResult(success=False, error="devkit_cmd not configured")
 
         cmd = [
             self.devkit_cmd,
-            "topdown",
-            "--duration",
+            "tuner",
+            "top-down",
+            "-d",
             str(duration),
-            "--output",
-            str(output_path),
+            "-i",
+            str(interval),
         ]
+        if pid is not None:
+            cmd += ["-p", str(pid)]
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=duration + 30)
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=duration + 30, check=False
+            )
             if result.returncode != 0:
                 return CollectionResult(success=False, error=result.stderr)
+            # devkit emits the report on stdout (there is no --output flag);
+            # capture it and persist it so parse_topdown_file can read it back.
+            output_path.write_text(result.stdout)
             return CollectionResult(success=True, topdown_path=str(output_path))
         except (subprocess.TimeoutExpired, FileNotFoundError) as e:
             return CollectionResult(success=False, error=str(e))
@@ -160,7 +181,12 @@ class MetricsCollector:
         return "\n".join(f"{frames} {count}" for frames, count in counts.items())
 
     def parse_topdown_file(self, filepath: pathlib.Path) -> Profile:
-        """Parse a previously collected Topdown JSON file."""
+        """Parse a previously collected Topdown file (JSON/CSV/TEXT)."""
+        suffix = filepath.suffix.lower()
+        if suffix == ".csv":
+            return self.topdown_parser.parse_csv(filepath)
+        if suffix in (".txt", ".text"):
+            return self.topdown_parser.parse_text(filepath)
         return self.topdown_parser.parse_json(filepath)
 
     def parse_flamegraph_file(self, filepath: pathlib.Path) -> list[HotspotFunction]:

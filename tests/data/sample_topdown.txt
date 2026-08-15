@@ -1,0 +1,6 @@
+================================ TOP-DOWN Summary Report ================================
+  Metric                           Value      Description
+  Bad Speculation                    3.01
+  Frontend Bound                    17.59
+  Retiring                            7.38
+  Backend Bound                    72.01

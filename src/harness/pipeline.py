@@ -86,6 +86,8 @@ class Pipeline:
                 topdown_profile = self.topdown_parser.parse_json(topdown_path)
             elif topdown_path.suffix == ".csv":
                 topdown_profile = self.topdown_parser.parse_csv(topdown_path)
+            elif topdown_path.suffix in (".txt", ".text"):
+                topdown_profile = self.topdown_parser.parse_text(topdown_path)
             logger.info("parsed_topdown", suffix=topdown_path.suffix)
 
         meta = metadata or {}

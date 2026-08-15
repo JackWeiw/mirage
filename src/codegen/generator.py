@@ -191,8 +191,15 @@ class WorkloadGenerator:
                 if impl != "memory_synthesis"
                 else f"{stage['stage_name']}_memory();"
             )
+            # Runtime ratio knob driving this stage's call frequency. Memory stages
+            # are scaled by cfg.memory_ratio (-> backend_bound), compute stages by
+            # cfg.compute_ratio (-> retiring). The structural `iterations` knob stays
+            # baked as the behavior fn's default arg -> work-per-call, orthogonal to
+            # the per-tick call frequency these ratios control.
+            ratio_expr = "cfg.memory_ratio" if impl == "memory_synthesis" else "cfg.compute_ratio"
             stage_ctx = {
                 "include_statement": f'#include "{filename}"',
+                "ratio_expr": ratio_expr,
                 "warmup_call": loop_call,
                 "loop_call": loop_call,
                 "measure_call": f"// {stage['stage_name']} measurement start",
@@ -208,6 +215,9 @@ class WorkloadGenerator:
             "stages": stage_contexts,
             "extra_sources": stage_files,
             "config": instruction.get("config", {}),
+            # Per-tick call burst the ratio knobs scale. round(0.2*20)=4,
+            # round(0.5*20)=10, round(0.8*20)=16 -> well-separated & monotonic.
+            "burst": instruction.get("burst", 20),
         }
 
         # Generate scaffold (CMakeLists.txt, main.cpp, config_loader.h, config.json)
