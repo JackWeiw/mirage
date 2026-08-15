@@ -122,12 +122,29 @@ def base_instruction(measurement_seconds: int, warmup_seconds: int) -> dict[str,
                 ],
             },
             {
+                # matmul (not the trivial "compute" archetype) so the compute stage
+                # does real work per call. The ratio knobs scale *call counts*
+                # (PR #49 main.cpp.j2 wiring), and call-count scaling only steers
+                # the topdown time-mix when a compute call costs roughly what a
+                # memory call does. The "compute" archetype (acc += i*const at
+                # iterations=100, ~0.1 us/call) is ~100x cheaper than a memory
+                # call (100 LLC-missing random accesses into 64 MB, ~10 us/call),
+                # so scaling its call count shifts the mix <1 pp (noise floor) and
+                # the gate misreads it as weak/dead. The archetype sweep already
+                # proved matmul at iterations=100 dominates: archetype_matmul
+                # (10 matmul + 10 memory calls) -> retiring 63.99 (compute-bound),
+                # vs archetype_compute -> backend 70.11 (compute negligible). With
+                # matmul as the default, compute_ratio 0.2->0.8 scales a genuinely
+                # compute-bound stage (4->16 matmul calls) -> retiring rises
+                # monotonically; memory_ratio then shifts a balanced mix ->
+                # backend rises. The trivial "compute" archetype is still
+                # characterized by the archetype sweep (ordinal=False).
                 "implementation_strategy": "compute_synthesis",
                 "stage_name": "comp_stage",
                 "strategies": [
                     {
                         "strategy": "compute_synthesis",
-                        "synthesis_config": {"archetype": "compute", "iterations": 100},
+                        "synthesis_config": {"archetype": "matmul", "iterations": 100},
                     }
                 ],
             },
