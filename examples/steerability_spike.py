@@ -19,18 +19,31 @@ What it does, per sweep point:
 It then writes sensitivity.json (raw rows) + sensitivity.md (per-knob table
 with direction and a controllable/weak/dead verdict).
 
-Run on the ARM target (needs cmake/make, perf, and the devkit):
+Run on the ARM target (needs cmake/make, perf, devkit, and taskset; perf/devkit
+typically require root or relaxed perf_event_paranoid):
 
     python examples/steerability_spike.py \
         --devkit-cmd /opt/devkit/bin/devkit \
+        --cpu-range 4 \
         --out-dir ./spike_out
 
-Collection notes (open questions in RFC 0003):
-  - collect_topdown is system-wide (devkit samples the whole core/box). On a
-    quiet target during the workload window this is acceptable; it is the
-    attribution caveat, not a correctness bug.
-  - collect_flamegraph(pid=...) IS workload-attached and is used only for
-    structural sanity (call-path presence), not for the sensitivity verdict.
+    # smoke-test one knob first to validate the full chain cheaply:
+    --only-knob working_set_mb
+
+Collection method (resolves RFC 0003's open question on topdown attribution):
+  - The workload is launched under `taskset -c <cpu_range>` so it stays on the
+    measured cores (no scheduler migration diluting per-core counters).
+  - Topdown: `devkit tuner top-down -d <dur> -i 3 -c <cpu> -p <pid>`, JSON
+    captured from stdout. `-p` attributes to the workload process; `-c` scopes
+    counters to the pinned cores. (NOTE: MetricsCollector.collect_topdown in
+    src/ uses an older wrong devkit CLI and is NOT used here — fixing it is a
+    follow-up for the production loop path.)
+  - Flamegraph: perf record -g -p <pid> (already process-attached via
+    MetricsCollector.collect_flamegraph); used only for structural sanity, not
+    the sensitivity verdict.
+  - The devkit JSON is assumed to match TopdownParser's schema (topdown_l1 /
+    memory keys). If it does not, the parse error surfaces the raw output so the
+    mapping can be fixed instead of failing silently.
 """
 
 from __future__ import annotations
@@ -171,12 +184,50 @@ SWEEPS: list[dict[str, Any]] = [
 ]
 
 
+def _collect_topdown_devkit(
+    devkit_cmd: str,
+    duration: int,
+    interval: int,
+    cpu_range: str | None,
+    pid: int,
+    out_path: pathlib.Path,
+) -> tuple[bool, str | None]:
+    """Run `devkit tuner top-down -d <dur> -i <int> [-c <cpu>] -p <pid>`.
+
+    Captures the devkit's JSON stdout to out_path. Returns (ok, error).
+    `-p` attributes topdown to the workload process (not system-wide); `-c`
+    scopes the per-core counters to the same cores the workload is pinned to.
+    """
+    cmd = [devkit_cmd, "tuner", "top-down", "-d", str(duration), "-i", str(interval)]
+    if cpu_range:
+        cmd += ["-c", cpu_range]
+    cmd += ["-p", str(pid)]
+    try:
+        with open(out_path, "w") as stdout_f:
+            result = subprocess.run(
+                cmd,
+                stdout=stdout_f,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=duration + 30,
+                check=False,
+            )
+    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        return False, f"devkit_launch: {exc}"
+    if result.returncode != 0:
+        return False, f"devkit rc={result.returncode}: {result.stderr[:300]}"
+    return True, None
+
+
 def run_one_point(
     point_id: str,
     instr: dict[str, Any],
     out_root: pathlib.Path,
     build_runner: BuildRunner,
     collector: MetricsCollector,
+    devkit_cmd: str,
+    devkit_interval: int,
+    cpu_range: str | None,
     measurement_seconds: int,
     warmup_seconds: int,
 ) -> dict[str, Any]:
@@ -193,10 +244,15 @@ def run_one_point(
     binary = build.binary_path
     config_path = str(project_dir / "config.json")
 
-    # Launch the workload in the background; it loops warmup + measurement.
+    # Launch the workload pinned to a CPU range (taskset) so the per-core
+    # topdown counters in `-c` measure exactly the cores it runs on. taskset
+    # execs the binary in place, so proc.pid is the workload's own PID.
+    launch_cmd: list[str] = [binary, config_path]
+    if cpu_range:
+        launch_cmd = ["taskset", "-c", cpu_range, binary, config_path]
     try:
         proc = subprocess.Popen(
-            [binary, config_path],
+            launch_cmd,
             cwd=project_dir,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -207,11 +263,15 @@ def run_one_point(
 
     td_path = project_dir / "topdown.json"
     fg_path = project_dir / "flamegraph_folded.txt"
-    td_result: dict[str, CollectionResult | None] = {"result": None}
+    td_out: dict[str, Any] = {"ok": False, "error": None}
     fg_result: dict[str, CollectionResult | None] = {"result": None}
 
     def collect_topdown() -> None:
-        td_result["result"] = collector.collect_topdown(td_path, measurement_seconds)
+        ok, err = _collect_topdown_devkit(
+            devkit_cmd, measurement_seconds, devkit_interval, cpu_range, proc.pid, td_path
+        )
+        td_out["ok"] = ok
+        td_out["error"] = err
 
     def collect_flamegraph() -> None:
         fg_result["result"] = collector.collect_flamegraph(
@@ -232,12 +292,21 @@ def run_one_point(
     except subprocess.TimeoutExpired:
         proc.kill()
 
-    td = td_result["result"]
-    if td is None or not td.success or td.topdown_path is None:
-        err = getattr(td, "error", "no_topdown_result") if td else "no_topdown_result"
-        return {"point_id": point_id, "error": f"collect_topdown_failed: {err}"}
+    if not td_out["ok"]:
+        return {"point_id": point_id, "error": f"collect_topdown_failed: {td_out['error']}"}
 
-    profile = TopdownParser().parse_json(pathlib.Path(td.topdown_path))
+    # Parse the devkit JSON. If the schema doesn't match TopdownParser's
+    # expected keys (topdown_l1 / memory), surface the raw output so the
+    # mapping can be fixed instead of failing silently.
+    try:
+        profile = TopdownParser().parse_json(td_path)
+    except (ValueError, OSError) as exc:
+        raw = td_path.read_text(errors="replace")[:300]
+        return {
+            "point_id": point_id,
+            "error": f"topdown_parse_failed: {exc}; raw[:300]={raw}",
+        }
+
     td1 = profile.topdown
     mem = profile.memory
     return {
@@ -297,6 +366,9 @@ def run_spike(args: argparse.Namespace) -> int:
                 out_root,
                 build_runner,
                 collector,
+                args.devkit_cmd,
+                args.devkit_interval,
+                args.cpu_range,
                 args.measurement_seconds,
                 args.warmup_seconds,
             )
@@ -369,15 +441,25 @@ def run_spike(args: argparse.Namespace) -> int:
 def main() -> int:
     p = argparse.ArgumentParser(description="Steerability spike (RFC 0003 gate).")
     p.add_argument("--out-dir", default="./spike_out", help="output directory")
-    p.add_argument("--devkit-cmd", default=None, help="devkit binary path; None disables topdown")
+    p.add_argument(
+        "--devkit-cmd", required=True, help="devkit binary path (e.g. /opt/devkit/bin/devkit)"
+    )
     p.add_argument("--perf-cmd", default="perf", help="perf binary path")
+    p.add_argument(
+        "--cpu-range",
+        default=None,
+        help="CPU range to pin the workload (taskset) and scope devkit -c, e.g. '4' or '4-7'",
+    )
+    p.add_argument("--devkit-interval", type=int, default=3, help="devkit -i interval")
     p.add_argument("--measurement-seconds", type=int, default=20)
     p.add_argument("--warmup-seconds", type=int, default=5)
     p.add_argument("--only-knob", default="", help="comma-separated knob names to subset the sweep")
     args = p.parse_args()
-    if args.devkit_cmd is None:
+    if args.cpu_range is None:
         print(
-            "[spike] WARNING: --devkit-cmd not set; topdown collection will fail every point.",
+            "[spike] WARNING: --cpu-range not set; workload not pinned and devkit "
+            "runs without -c — topdown will be process-attributed but not core-scoped "
+            "(less precise).",
             file=sys.stderr,
         )
     return run_spike(args)
