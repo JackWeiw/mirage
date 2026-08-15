@@ -1,26 +1,32 @@
 """Steerability spike — prove the workload plant is controllable before wiring the auto-iteration loop.
 
 This is a disposable measurement harness, not production code. It answers one
-question: do the synthesis knobs move Topdown L1 and memory bandwidth in a
-readable, monotonic direction? It is the empirical gate for RFC 0003 — do not
-wire the Phase 2 auto-iteration loop until this spike's per-knob verdict is
-"controllable" for the key microarch knobs.
+question: do the synthesis knobs move Topdown L1 (frontend/backend/retiring/bad-
+spec) in a readable, monotonic direction? It is the empirical gate for RFC 0003
+— do not wire the Phase 2 auto-iteration loop until this spike's per-knob
+verdict is "controllable" for the key microarch knobs.
 
 What it does, per sweep point:
   1. deep-copy a hand-authored BASE_INSTRUCTION (local-only, no LLM — the agent
      is NOT what we are measuring; the plant is),
   2. mutate one knob (OAT: low/mid/high),
-  3. regenerate via WorkloadGenerator, build via BuildRunner,
-  4. run the binary in the background and collect Topdown + flamegraph during
-     the measurement window via MetricsCollector,
-  5. parse the devkit JSON for absolute Topdown L1 + memory bandwidth,
+  3. regenerate via WorkloadGenerator, then overwrite config_loader.h with a
+     nlohmann-free baked version (the production template pulls nlohmann/json,
+     which is not on a bare ARM toolchain), build via BuildRunner,
+  4. launch the binary pinned to a CPU (taskset), warm up, then collect Topdown
+     during the measurement window via `devkit tuner top-down`,
+  5. parse the L1 percentages out of devkit's TEXT report (not JSON),
   6. record a row.
 
-It then writes sensitivity.json (raw rows) + sensitivity.md (per-knob table
-with direction and a controllable/weak/dead verdict).
+Memory bandwidth is NOT collected here — the devkit top-down text report has
+no bandwidth number; backend_bound (and its L3-Bound sub-metric) is the memory
+proxy. Bandwidth needs a separate collector and is out of spike scope.
 
-Run on the ARM target (needs cmake/make, perf, devkit, and taskset; perf/devkit
-typically require root or relaxed perf_event_paranoid):
+It then writes sensitivity.json (raw rows) + sensitivity.md (per-knob table with
+direction and a controllable/weak/dead verdict).
+
+Run on the ARM target (needs cmake/make, devkit, taskset; devkit typically
+requires root):
 
     python examples/steerability_spike.py \
         --devkit-cmd /opt/devkit/bin/devkit \
@@ -32,18 +38,18 @@ typically require root or relaxed perf_event_paranoid):
 
 Collection method (resolves RFC 0003's open question on topdown attribution):
   - The workload is launched under `taskset -c <cpu_range>` so it stays on the
-    measured cores (no scheduler migration diluting per-core counters).
-  - Topdown: `devkit tuner top-down -d <dur> -i 3 -c <cpu> -p <pid>`, JSON
-    captured from stdout. `-p` attributes to the workload process; `-c` scopes
-    counters to the pinned cores. (NOTE: MetricsCollector.collect_topdown in
+    measured core (no scheduler migration diluting per-core counters). It runs
+    a few seconds longer than the devkit collection so it is still alive when
+    devkit finishes (avoids a `-p <pid>` race when the process exits early).
+  - Topdown: `devkit tuner top-down -d <dur> -i 3 --cpu <cpu> -p <pid>`, text
+    report captured from stdout. `-p` attributes to the workload process;
+    `--cpu` scopes counters to the pinned core. (NOTE: MetricsCollector in
     src/ uses an older wrong devkit CLI and is NOT used here — fixing it is a
     follow-up for the production loop path.)
-  - Flamegraph: perf record -g -p <pid> (already process-attached via
-    MetricsCollector.collect_flamegraph); used only for structural sanity, not
-    the sensitivity verdict.
-  - The devkit JSON is assumed to match TopdownParser's schema (topdown_l1 /
-    memory keys). If it does not, the parse error surfaces the raw output so the
-    mapping can be fixed instead of failing silently.
+  - devkit emits a TEXT report (a human-readable table), not JSON — parsed by
+    _parse_topdown_text, not TopdownParser (whose JSON-schema assumption was
+    wrong). Flamegraph/perf is not collected — the sensitivity verdict is
+    based on Topdown L1 alone, which removes a perf dependency.
 """
 
 from __future__ import annotations
@@ -52,12 +58,12 @@ import argparse
 import copy
 import json
 import pathlib
+import re
 import subprocess
 import sys
-import threading
 import time
 import types
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 # Make src importable without `pip install -e .` (spike is run in-place on ARM).
 _SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
@@ -70,18 +76,18 @@ sys.path.insert(0, str(_SRC))
 # depending on how mirage is editable-installed. Pre-seed sys.modules with our
 # package pointing at src/profile so `from profile.* import ...` always resolves
 # there. src/profile/__init__.py is empty, so a bare module with __path__ set
-# is enough (no __init__ body to exec).
+# is enough (no __init__ body to exec). codegen transitively imports
+# profile.profile_schema (call_tree, module_graph_builder), so this matters.
 _profile_pkg = types.ModuleType("profile")
 _profile_pkg.__path__ = [str(_SRC / "profile")]
 sys.modules["profile"] = _profile_pkg
 
 from codegen.generator import WorkloadGenerator  # noqa: E402
 from harness.build_runner import BuildRunner  # noqa: E402
-from harness.metrics_collector import MetricsCollector  # noqa: E402
-from ingestion.topdown_parser import TopdownParser  # noqa: E402
 
-if TYPE_CHECKING:
-    from models.results import CollectionResult
+# Workload runs this many seconds longer than the devkit collection so the
+# process is still alive when devkit finishes (avoids the -p <pid> exit race).
+_WORKLOAD_MEASUREMENT_PAD_S = 3
 
 
 def base_instruction(measurement_seconds: int, warmup_seconds: int) -> dict[str, Any]:
@@ -196,6 +202,68 @@ SWEEPS: list[dict[str, Any]] = [
 ]
 
 
+def _write_baked_config_loader(project_dir: pathlib.Path, config: dict[str, Any]) -> None:
+    """Overwrite the generated config_loader.h with a nlohmann-free version.
+
+    The production config_loader.h.j2 hardcodes `#include <nlohmann/json.hpp>`,
+    which fails on a bare ARM toolchain without that header installed (the
+    instruction carries dependencies:[], so CMake does not pull nlohmann in
+    either). The spike already controls the runtime values via the instruction,
+    so bake them in at compile time and skip JSON parsing entirely. (main.cpp
+    only reads thread_count/qps/warmup_seconds/measurement_seconds —
+    compute_ratio/memory_ratio are baked but unused, and that inertness is
+    itself a spike finding recorded in sensitivity.json.)
+    """
+    content = (
+        "#pragma once\n"
+        "#include <string>\n\n"
+        "struct RunConfig {\n"
+        "    int thread_count;\n"
+        "    int qps;\n"
+        "    int warmup_seconds;\n"
+        "    int measurement_seconds;\n"
+        "    double compute_ratio;\n"
+        "    double memory_ratio;\n"
+        "};\n\n"
+        "inline RunConfig load_config(const std::string&) {\n"
+        "    return RunConfig{" + f"{config.get('thread_count', 4)}, {config.get('qps', 100)}, "
+        f"{config.get('warmup_seconds', 30)}, "
+        f"{config.get('measurement_seconds', 60)}, "
+        f"{config.get('compute_ratio', 0.5)}, {config.get('memory_ratio', 0.5)}" + "};\n"
+        "}\n"
+    )
+    (project_dir / "config_loader.h").write_text(content)
+
+
+# devkit `tuner top-down` emits a human-readable table, e.g.:
+#   Backend Bound                              72.01    --
+#   Frontend Bound                            17.59    --
+#   Bad Speculation                            3.01    --
+#   Retiring                                    7.38    --
+# Pull the four L1 category percentages (case-insensitive label, first float).
+_TOPDOWN_L1_RE = re.compile(
+    r"^\s*(backend bound|frontend bound|bad speculation|retiring)\s+([\d.]+)",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _parse_topdown_text(path: pathlib.Path) -> dict[str, float | None]:
+    """Parse the devkit top-down TEXT report into L1 percentages.
+
+    Returns None for any category not found (so a format change surfaces as a
+    missing value rather than a crash). All four None -> caller treats it as a
+    parse failure and surfaces the raw text.
+    """
+    text = path.read_text(errors="replace")
+    found = {label.lower(): float(val) for label, val in _TOPDOWN_L1_RE.findall(text)}
+    return {
+        "frontend_bound": found.get("frontend bound"),
+        "backend_bound": found.get("backend bound"),
+        "bad_speculation": found.get("bad speculation"),
+        "retiring": found.get("retiring"),
+    }
+
+
 def _collect_topdown_devkit(
     devkit_cmd: str,
     duration: int,
@@ -204,15 +272,15 @@ def _collect_topdown_devkit(
     pid: int,
     out_path: pathlib.Path,
 ) -> tuple[bool, str | None]:
-    """Run `devkit tuner top-down -d <dur> -i <int> [-c <cpu>] -p <pid>`.
+    """Run `devkit tuner top-down -d <dur> -i <int> [--cpu <cpu>] -p <pid>`.
 
-    Captures the devkit's JSON stdout to out_path. Returns (ok, error).
-    `-p` attributes topdown to the workload process (not system-wide); `-c`
+    Captures the devkit's TEXT report stdout to out_path. Returns (ok, error).
+    `-p` attributes topdown to the workload process (not system-wide); `--cpu`
     scopes the per-core counters to the same cores the workload is pinned to.
     """
     cmd = [devkit_cmd, "tuner", "top-down", "-d", str(duration), "-i", str(interval)]
     if cpu_range:
-        cmd += ["-c", cpu_range]
+        cmd += ["--cpu", cpu_range]
     cmd += ["-p", str(pid)]
     try:
         with open(out_path, "w") as stdout_f:
@@ -236,18 +304,20 @@ def run_one_point(
     instr: dict[str, Any],
     out_root: pathlib.Path,
     build_runner: BuildRunner,
-    collector: MetricsCollector,
     devkit_cmd: str,
     devkit_interval: int,
     cpu_range: str | None,
     measurement_seconds: int,
     warmup_seconds: int,
 ) -> dict[str, Any]:
-    """Regenerate, build, run+collect, parse — return one sensitivity row."""
+    """Regenerate, bake config, build, run+collect, parse — return one row."""
     project_dir = out_root / point_id
     project_dir.mkdir(parents=True, exist_ok=True)
 
     WorkloadGenerator().generate(instr, project_dir)
+    # Replace the nlohmann-dependent generated header with a baked one so the
+    # project builds on a bare ARM toolchain. See _write_baked_config_loader.
+    _write_baked_config_loader(project_dir, instr["config"])
 
     build = build_runner.build(project_dir)
     if not build.success or not build.binary_path:
@@ -257,7 +327,7 @@ def run_one_point(
     config_path = str(project_dir / "config.json")
 
     # Launch the workload pinned to a CPU range (taskset) so the per-core
-    # topdown counters in `-c` measure exactly the cores it runs on. taskset
+    # topdown counters in `--cpu` measure exactly the cores it runs on. taskset
     # execs the binary in place, so proc.pid is the workload's own PID.
     launch_cmd: list[str] = [binary, config_path]
     if cpu_range:
@@ -273,75 +343,46 @@ def run_one_point(
     except FileNotFoundError as exc:
         return {"point_id": point_id, "error": f"binary_launch_failed: {exc}"}
 
-    td_path = project_dir / "topdown.json"
-    fg_path = project_dir / "flamegraph_folded.txt"
-    td_out: dict[str, Any] = {"ok": False, "error": None}
-    fg_result: dict[str, CollectionResult | None] = {"result": None}
+    td_path = project_dir / "topdown.txt"
 
-    def collect_topdown() -> None:
-        ok, err = _collect_topdown_devkit(
-            devkit_cmd, measurement_seconds, devkit_interval, cpu_range, proc.pid, td_path
-        )
-        td_out["ok"] = ok
-        td_out["error"] = err
-
-    def collect_flamegraph() -> None:
-        fg_result["result"] = collector.collect_flamegraph(
-            fg_path, measurement_seconds, pid=proc.pid
-        )
-
-    # Warm up, then collect both concurrently during the measurement window.
+    # Warm up, then collect topdown synchronously during the measurement window.
     time.sleep(warmup_seconds)
-    t_td = threading.Thread(target=collect_topdown)
-    t_fg = threading.Thread(target=collect_flamegraph)
-    t_td.start()
-    t_fg.start()
-    t_td.join()
-    t_fg.join()
+    ok, err = _collect_topdown_devkit(
+        devkit_cmd, measurement_seconds, devkit_interval, cpu_range, proc.pid, td_path
+    )
 
+    # The workload runs measurement_seconds + pad; devkit collected for
+    # measurement_seconds, so the process should be exiting/exitable now.
     try:
-        proc.wait(timeout=measurement_seconds + 30)
+        proc.wait(timeout=_WORKLOAD_MEASUREMENT_PAD_S + 30)
     except subprocess.TimeoutExpired:
         proc.kill()
 
-    if not td_out["ok"]:
-        return {"point_id": point_id, "error": f"collect_topdown_failed: {td_out['error']}"}
+    if not ok:
+        return {"point_id": point_id, "error": f"collect_topdown_failed: {err}"}
 
-    # Parse the devkit JSON. If the schema doesn't match TopdownParser's
-    # expected keys (topdown_l1 / memory), surface the raw output so the
-    # mapping can be fixed instead of failing silently.
-    try:
-        profile = TopdownParser().parse_json(td_path)
-    except (ValueError, OSError) as exc:
+    td1 = _parse_topdown_text(td_path)
+    if all(v is None for v in td1.values()):
         raw = td_path.read_text(errors="replace")[:300]
         return {
             "point_id": point_id,
-            "error": f"topdown_parse_failed: {exc}; raw[:300]={raw}",
+            "error": f"topdown_parse_failed: no L1 lines; raw[:300]={raw}",
         }
-
-    td1 = profile.topdown
-    mem = profile.memory
     return {
         "point_id": point_id,
-        "topdown_l1": {
-            "frontend_bound": td1.frontend_bound if td1 else None,
-            "backend_bound": td1.backend_bound if td1 else None,
-            "bad_speculation": td1.bad_speculation if td1 else None,
-            "retiring": td1.retiring if td1 else None,
-        },
-        "memory_bandwidth_gbps": mem.bandwidth_gbps if mem else None,
-        "flamegraph_path": str(fg_path)
-        if fg_result["result"] and fg_result["result"].success
-        else None,
+        "topdown_l1": td1,
+        # devkit top-down text report has no bandwidth; backend_bound (and its
+        # L3-Bound sub-metric) is the memory proxy. Out of spike scope.
+        "memory_bandwidth_gbps": None,
     }
 
 
 def verdict_for(knob: str, target_metric: str, expected: str, rows: list[dict[str, Any]]) -> str:
     """Classify a knob's effect: controllable / weak / dead.
 
-    controllable: target_metric is strictly monotonic across low->high and the
-    direction matches `expected`. weak: moves but non-monotonic or wrong
-    direction. dead: no movement (all equal).
+    controllable: target_metric is monotonic across low->high and the direction
+    matches `expected`. weak: moves but non-monotonic or wrong direction. dead:
+    no movement (all equal).
     """
     vals = [r["topdown_l1"][target_metric] for r in rows if r.get("topdown_l1")]
     if len(vals) != len(rows) or not vals:
@@ -360,7 +401,6 @@ def run_spike(args: argparse.Namespace) -> int:
     out_root = pathlib.Path(args.out_dir)
     out_root.mkdir(parents=True, exist_ok=True)
     build_runner = BuildRunner()
-    collector = MetricsCollector(devkit_cmd=args.devkit_cmd, perf_cmd=args.perf_cmd)
 
     only = set(args.only_knob.split(",")) if args.only_knob else None
     rows: list[dict[str, Any]] = []
@@ -369,7 +409,13 @@ def run_spike(args: argparse.Namespace) -> int:
             continue
         for value in sweep["values"]:
             point_id = f"{sweep['knob']}_{value}"
-            instr = copy.deepcopy(base_instruction(args.measurement_seconds, args.warmup_seconds))
+            # Bake the workload's measurement window a few seconds longer than
+            # the devkit collection so the process outlives devkit (see header).
+            instr = copy.deepcopy(
+                base_instruction(
+                    args.measurement_seconds + _WORKLOAD_MEASUREMENT_PAD_S, args.warmup_seconds
+                )
+            )
             sweep["mutator"](instr, value)
             print(f"[spike] {point_id}: build + run + collect ...", flush=True)
             row = run_one_point(
@@ -377,7 +423,6 @@ def run_spike(args: argparse.Namespace) -> int:
                 instr,
                 out_root,
                 build_runner,
-                collector,
                 args.devkit_cmd,
                 args.devkit_interval,
                 args.cpu_range,
@@ -391,9 +436,10 @@ def run_spike(args: argparse.Namespace) -> int:
             if "error" in row:
                 print(f"[spike] {point_id}: ERROR {row['error']}", flush=True)
             else:
-                bb = row["topdown_l1"]["backend_bound"]
+                td1 = row["topdown_l1"]
                 print(
-                    f"[spike] {point_id}: backend={bb} bw={row['memory_bandwidth_gbps']}",
+                    f"[spike] {point_id}: backend={td1['backend_bound']} "
+                    f"retiring={td1['retiring']}",
                     flush=True,
                 )
             rows.append(row)
@@ -456,11 +502,11 @@ def main() -> int:
     p.add_argument(
         "--devkit-cmd", required=True, help="devkit binary path (e.g. /opt/devkit/bin/devkit)"
     )
-    p.add_argument("--perf-cmd", default="perf", help="perf binary path")
     p.add_argument(
         "--cpu-range",
         default=None,
-        help="CPU range to pin the workload (taskset) and scope devkit -c, e.g. '4' or '4-7'",
+        help="CPU range to pin the workload (taskset) and scope devkit --cpu, "
+        "e.g. '4' or '4-7' or '1-39,120-159'",
     )
     p.add_argument("--devkit-interval", type=int, default=3, help="devkit -i interval")
     p.add_argument("--measurement-seconds", type=int, default=20)
@@ -470,8 +516,8 @@ def main() -> int:
     if args.cpu_range is None:
         print(
             "[spike] WARNING: --cpu-range not set; workload not pinned and devkit "
-            "runs without -c — topdown will be process-attributed but not core-scoped "
-            "(less precise).",
+            "runs without --cpu — topdown will be process-attributed but not "
+            "core-scoped (less precise).",
             file=sys.stderr,
         )
     return run_spike(args)
