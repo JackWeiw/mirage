@@ -109,15 +109,19 @@ categorical string-valued knobs like `archetype`). Split the classifier:
 - **Ordinal path** (unchanged behavior): `dead` if all values equal; else `controllable`
   if monotonic in `expected` direction, otherwise `weak`.
 - **Categorical path** (discrimination): `spread = max(vals) - min(vals)`.
-  - `dead` if `spread <= EPS` (EPS = 0.01).
+  - `dead` if `spread <= EPS` (EPS = 0.5 pp; real effects are 8–42 pp, so inert
+    knobs at ≤0.2 pp jitter read dead without false-positive risk).
   - `controllable` if `spread >= DISCRIM_THRESHOLD` (propose **5.0 pp**).
   - else `weak`.
 
-Threshold rationale: archetype's spread is 42.35; the inert ratio knobs' spread is
-~0.03. A 5.0 pp threshold cleanly separates real steering from noise/dead. Mark
-archetype's sweep `ordinal: False` → re-verdicts `controllable`. The ratio sweeps stay
-ordinal (numeric, expected-monotonic) and will flip dead→controllable once Section 1
-lands and they actually move.
+The spread-based `dead` check applies to **both** paths (replacing the old
+exact-equality test, which mislabeled near-flat inert knobs like
+`compute_ratio`/`memory_ratio` at 0.03–0.23 pp as `weak`). Threshold rationale:
+archetype's spread is 42.35; the inert ratio knobs' spread is ≤0.23. A 0.5 pp
+EPS and 5.0 pp threshold cleanly separate real steering from noise/dead. Mark
+archetype's sweep `ordinal: False` → re-verdicts `controllable`. The ratio sweeps
+stay ordinal (numeric, expected-monotonic) and read `dead` until Section 1
+lands; after the codegen fix their spread should exceed 5 → `controllable`.
 
 Rejected: reordering archetype's values to force monotonicity (gaming the test —
 categorical knobs have no guaranteed monotonic relation); relaxing the ordinal bar
