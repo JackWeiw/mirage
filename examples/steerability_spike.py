@@ -363,6 +363,24 @@ def run_one_point(
 
     # Warm up, then collect topdown synchronously during the measurement window.
     time.sleep(warmup_seconds)
+
+    # If the workload already exited during warmup (e.g. a stage segfaulted),
+    # surface its stdout/stderr + return code — otherwise this shows up later
+    # as a misleading devkit "no such process" that hides the real crash.
+    if proc.poll() is not None:
+        try:
+            out, err_out = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            out, err_out = "<communicate-timeout>", "<communicate-timeout>"
+        return {
+            "point_id": point_id,
+            "error": (
+                f"workload_exited_during_warmup rc={proc.returncode}; "
+                f"stdout[:500]={(out or '')[:500]}; "
+                f"stderr[:500]={(err_out or '')[:500]}"
+            ),
+        }
+
     ok, err = _collect_topdown_devkit(
         devkit_cmd, measurement_seconds, devkit_interval, proc.pid, td_path
     )
