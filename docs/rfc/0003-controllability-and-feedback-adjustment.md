@@ -1,6 +1,6 @@
 # RFC 0003: Controllability & feedback-adjustment contract for automated iteration
 
-- **Status:** Draft
+- **Status:** In Review
 - **Number:** 0003
 - **Author:** Jack Wei
 - **Date:** 2026-08-15
