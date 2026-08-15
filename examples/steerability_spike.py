@@ -56,12 +56,24 @@ import subprocess
 import sys
 import threading
 import time
+import types
 from typing import TYPE_CHECKING, Any
 
 # Make src importable without `pip install -e .` (spike is run in-place on ARM).
 _SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
+sys.path.insert(0, str(_SRC))
+
+# The project ships a top-level package named `profile`, which collides with
+# CPython's stdlib `profile` (the profiler — a single-file module). Under
+# pytest/mypy (pythonpath/mypy_path = src) the project's package wins; run
+# bare, the stdlib one can be picked instead ("'profile' is not a package"),
+# depending on how mirage is editable-installed. Pre-seed sys.modules with our
+# package pointing at src/profile so `from profile.* import ...` always resolves
+# there. src/profile/__init__.py is empty, so a bare module with __path__ set
+# is enough (no __init__ body to exec).
+_profile_pkg = types.ModuleType("profile")
+_profile_pkg.__path__ = [str(_SRC / "profile")]
+sys.modules["profile"] = _profile_pkg
 
 from codegen.generator import WorkloadGenerator  # noqa: E402
 from harness.build_runner import BuildRunner  # noqa: E402
