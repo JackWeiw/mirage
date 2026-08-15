@@ -187,6 +187,11 @@ SWEEPS: list[dict[str, Any]] = [
         "expected": "up",  # compute -> hash -> matmul retires more useful work
         "values": ["compute", "hash", "matmul"],
         "mutator": lambda instr, v: _set_comp_cfg(instr, "archetype", v),
+        # Categorical knob: compute/hash/matmul have no natural order on retiring,
+        # so a strict monotonic test mislabels a strongly-discriminating knob
+        # (matmul retires ~3x the memory-bound archetypes) as "weak" just because
+        # compute(23.01)->hash(21.24) dips before the jump. Judge by discrimination.
+        "ordinal": False,
     },
     {
         "knob": "compute_ratio",
@@ -453,18 +458,44 @@ def run_one_point(
     }
 
 
-def verdict_for(knob: str, target_metric: str, expected: str, rows: list[dict[str, Any]]) -> str:
+# A knob is "dead" if its target metric barely moves across the sweep. The old
+# exact-equality test missed near-flat knobs (e.g. an inert compute_ratio with a
+# 0.03-pp spread read as "weak" not "dead"); a spread threshold is more honest.
+# 0.5 pp: real knob effects in this plant are 8-42 pp, so inert knobs (<=0.2 pp
+# of jitter) read as dead without false-positive risk.
+_DISCRIM_EPS = 0.5
+# Categorical knobs (no natural order, e.g. archetype) are judged by
+# discrimination, not monotonicity: does the metric separate across categories?
+# archetype's spread is ~42 pp; inert knobs are ~0.03 pp; 5.0 cleanly separates.
+_DISCRIM_THRESHOLD = 5.0
+
+
+def verdict_for(
+    knob: str,
+    target_metric: str,
+    expected: str,
+    rows: list[dict[str, Any]],
+    ordinal: bool = True,
+) -> str:
     """Classify a knob's effect: controllable / weak / dead.
 
-    controllable: target_metric is monotonic across low->high and the direction
-    matches `expected`. weak: moves but non-monotonic or wrong direction. dead:
-    no movement (all equal).
+    Ordinal knobs (numeric, expected-monotonic, the default): controllable if the
+    target_metric is monotonic across low->high in `expected` direction; weak if
+    it moves but non-monotonically or the wrong way; dead if it barely moves.
+
+    Categorical knobs (ordinal=False, e.g. archetype): no natural order, so
+    monotonicity does not apply. Judge by discrimination -- does the metric
+    separate across categories? controllable if spread >= _DISCRIM_THRESHOLD,
+    else weak (and dead if spread <= _DISCRIM_EPS).
     """
     vals = [r["topdown_l1"][target_metric] for r in rows if r.get("topdown_l1")]
     if len(vals) != len(rows) or not vals:
         return "dead"
-    if all(v == vals[0] for v in vals):
+    spread = max(vals) - min(vals)
+    if spread <= _DISCRIM_EPS:
         return "dead"
+    if not ordinal:
+        return "controllable" if spread >= _DISCRIM_THRESHOLD else "weak"
     increasing = all(vals[i] <= vals[i + 1] for i in range(len(vals) - 1))
     decreasing = all(vals[i] >= vals[i + 1] for i in range(len(vals) - 1))
     if not (increasing or decreasing):
@@ -532,7 +563,13 @@ def run_spike(args: argparse.Namespace) -> int:
                 {"knob": sweep["knob"], "verdict": "dead", "reason": "all points errored"}
             )
             continue
-        v = verdict_for(sweep["knob"], sweep["target_metric"], sweep["expected"], good)
+        v = verdict_for(
+            sweep["knob"],
+            sweep["target_metric"],
+            sweep["expected"],
+            good,
+            ordinal=sweep.get("ordinal", True),
+        )
         verdicts.append(
             {
                 "knob": sweep["knob"],
