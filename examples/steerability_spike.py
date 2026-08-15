@@ -41,11 +41,13 @@ Collection method (resolves RFC 0003's open question on topdown attribution):
     measured core (no scheduler migration diluting per-core counters). It runs
     a few seconds longer than the devkit collection so it is still alive when
     devkit finishes (avoids a `-p <pid>` race when the process exits early).
-  - Topdown: `devkit tuner top-down -d <dur> -i 3 --cpu <cpu> -p <pid>`, text
-    report captured from stdout. `-p` attributes to the workload process;
-    `--cpu` scopes counters to the pinned core. (NOTE: MetricsCollector in
-    src/ uses an older wrong devkit CLI and is NOT used here — fixing it is a
-    follow-up for the production loop path.)
+  - Topdown: `devkit tuner top-down -d <dur> -i 3 -p <pid>`, text report
+    captured from stdout. `-p` attributes to the workload process. devkit
+    forbids `-p` and `--cpu` together, so we do NOT pass `--cpu` — the
+    taskset pin already places the process on the measured core, and process
+    attribution is more precise than system-wide-on-core. (NOTE:
+    MetricsCollector in src/ uses an older wrong devkit CLI and is NOT used
+    here — fixing it is a follow-up for the production loop path.)
   - devkit emits a TEXT report (a human-readable table), not JSON — parsed by
     _parse_topdown_text, not TopdownParser (whose JSON-schema assumption was
     wrong). Flamegraph/perf is not collected — the sensitivity verdict is
@@ -268,20 +270,33 @@ def _collect_topdown_devkit(
     devkit_cmd: str,
     duration: int,
     interval: int,
-    cpu_range: str | None,
     pid: int,
     out_path: pathlib.Path,
 ) -> tuple[bool, str | None]:
-    """Run `devkit tuner top-down -d <dur> -i <int> [--cpu <cpu>] -p <pid>`.
+    """Run `devkit tuner top-down -d <dur> -i <int> -p <pid>`.
 
     Captures the devkit's TEXT report stdout to out_path. Returns (ok, error).
-    `-p` attributes topdown to the workload process (not system-wide); `--cpu`
-    scopes the per-core counters to the same cores the workload is pinned to.
+    `-p` attributes topdown to the workload process (not system-wide).
+
+    devkit rejects `-p/--pid` together with `-c/--cpu` ("Options ... cannot be
+    used together"), so the two scopes are mutually exclusive. We use `-p`
+    (process attribution) and rely on the workload already being taskset-pinned
+    to the target core for core placement — the process runs on that core, so its
+    attributed topdown is the on-core breakdown we want. Process attribution is
+    also more precise than system-wide-on-core, and it answers RFC 0003's open
+    question (yes, devkit topdown is workload-attributable, not just system-wide).
     """
-    cmd = [devkit_cmd, "tuner", "top-down", "-d", str(duration), "-i", str(interval)]
-    if cpu_range:
-        cmd += ["--cpu", cpu_range]
-    cmd += ["-p", str(pid)]
+    cmd = [
+        devkit_cmd,
+        "tuner",
+        "top-down",
+        "-d",
+        str(duration),
+        "-i",
+        str(interval),
+        "-p",
+        str(pid),
+    ]
     try:
         with open(out_path, "w") as stdout_f:
             result = subprocess.run(
@@ -326,9 +341,10 @@ def run_one_point(
     binary = build.binary_path
     config_path = str(project_dir / "config.json")
 
-    # Launch the workload pinned to a CPU range (taskset) so the per-core
-    # topdown counters in `--cpu` measure exactly the cores it runs on. taskset
-    # execs the binary in place, so proc.pid is the workload's own PID.
+    # Launch the workload pinned to a CPU range (taskset) so its topdown
+    # counters (attributed via -p <pid>) are measured on exactly the core it
+    # runs on, with no scheduler migration diluting them. taskset execs the
+    # binary in place, so proc.pid is the workload's own PID.
     launch_cmd: list[str] = [binary, config_path]
     if cpu_range:
         launch_cmd = ["taskset", "-c", cpu_range, binary, config_path]
@@ -348,7 +364,7 @@ def run_one_point(
     # Warm up, then collect topdown synchronously during the measurement window.
     time.sleep(warmup_seconds)
     ok, err = _collect_topdown_devkit(
-        devkit_cmd, measurement_seconds, devkit_interval, cpu_range, proc.pid, td_path
+        devkit_cmd, measurement_seconds, devkit_interval, proc.pid, td_path
     )
 
     # The workload runs measurement_seconds + pad; devkit collected for
@@ -505,8 +521,8 @@ def main() -> int:
     p.add_argument(
         "--cpu-range",
         default=None,
-        help="CPU range to pin the workload (taskset) and scope devkit --cpu, "
-        "e.g. '4' or '4-7' or '1-39,120-159'",
+        help="CPU range to pin the workload via taskset so its topdown counters "
+        "stay on one core, e.g. '4' or '4-7' or '1-39,120-159'",
     )
     p.add_argument("--devkit-interval", type=int, default=3, help="devkit -i interval")
     p.add_argument("--measurement-seconds", type=int, default=20)
@@ -515,9 +531,9 @@ def main() -> int:
     args = p.parse_args()
     if args.cpu_range is None:
         print(
-            "[spike] WARNING: --cpu-range not set; workload not pinned and devkit "
-            "runs without --cpu — topdown will be process-attributed but not "
-            "core-scoped (less precise).",
+            "[spike] WARNING: --cpu-range not set; workload not pinned via taskset "
+            "— it may migrate across cores, diluting the per-process topdown "
+            "attribution. Set it to an isolated core for precise results.",
             file=sys.stderr,
         )
     return run_spike(args)
