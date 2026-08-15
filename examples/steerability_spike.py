@@ -59,6 +59,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -335,10 +336,31 @@ def run_one_point(
     _write_baked_config_loader(project_dir, instr["config"])
 
     build = build_runner.build(project_dir)
-    if not build.success or not build.binary_path:
+    if not build.success:
         return {"point_id": point_id, "error": f"build_failed: {build.stderr[:300]}"}
 
-    binary = build.binary_path
+    # CMake names the executable after project_name (add_executable(<name>)),
+    # so locate it directly and verify it is executable. BuildRunner's binary
+    # detection picks the first suffixless file in the build tree, which on
+    # this box is the Makefile (no extension -> not excluded) -- taskset then
+    # tries to exec the Makefile (rc=127). The executable-bit check rules the
+    # Makefile out. (BuildRunner's rglob pick is a production bug; flagged as a
+    # follow-up so the auto-loop doesn't hit it too.)
+    binary = project_dir / "build" / instr["project_name"]
+    if not (binary.is_file() and os.access(binary, os.X_OK)):
+        cand = pathlib.Path(build.binary_path) if build.binary_path else None
+        if cand and cand.is_file() and os.access(cand, os.X_OK):
+            binary = cand
+        else:
+            return {
+                "point_id": point_id,
+                "error": (
+                    f"binary_not_found: expected {binary} "
+                    f"(build.binary_path={build.binary_path}); "
+                    f"build.stderr[:200]={build.stderr[:200]}"
+                ),
+            }
+    binary = str(binary)
     config_path = str(project_dir / "config.json")
 
     # Launch the workload pinned to a CPU range (taskset) so its topdown
