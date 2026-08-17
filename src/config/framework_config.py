@@ -41,6 +41,21 @@ class HarnessConfig(BaseModel):
     build_dir_suffix: str = "build"
 
 
+class DevkitConfig(BaseModel):
+    """Devkit topdown-collection plumbing for the auto-iteration loop (#47).
+
+    The loop's run_and_collect calls collect_topdown(duration=..., interval=...,
+    pid=...) and pins the workload with taskset to cpu_range. None devkit_cmd
+    means the devkit is not configured (degraded / no-collection mode).
+    """
+
+    devkit_cmd: str | None = None
+    duration_seconds: int = 20
+    interval_seconds: int = 3
+    cpu_range: str | None = None  # taskset pin, e.g. "4" or "4-7"
+    collect_pid: bool = True  # -p <pid> attribution (spike-proven)
+
+
 class FrameworkConfig(BaseModel):
     """Complete framework configuration."""
 
@@ -51,6 +66,7 @@ class FrameworkConfig(BaseModel):
     run_defaults: RunDefaults = Field(default_factory=RunDefaults)
     codegen: CodegenConfig = Field(default_factory=CodegenConfig)
     harness: HarnessConfig = Field(default_factory=HarnessConfig)
+    devkit: DevkitConfig = Field(default_factory=DevkitConfig)
 
     @classmethod
     def from_yaml(cls, filepath: pathlib.Path) -> "FrameworkConfig":

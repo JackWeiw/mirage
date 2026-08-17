@@ -1,6 +1,11 @@
 """Tests for FrameworkConfig."""
 
-from config.framework_config import AgentConfig, ComparisonConfig, FrameworkConfig
+from config.framework_config import (
+    AgentConfig,
+    ComparisonConfig,
+    DevkitConfig,
+    FrameworkConfig,
+)
 
 
 def test_framework_config_defaults() -> None:
@@ -41,3 +46,29 @@ def test_comparison_config_loop_control_defaults() -> None:
     assert c.topdown_threshold_pct == 10.0
     assert c.memory_threshold_pct == 5.0
     assert c.coverage_threshold_pct == 80.0
+
+
+def test_devkit_config_defaults() -> None:
+    d = DevkitConfig()
+    assert d.devkit_cmd is None
+    assert d.duration_seconds == 20
+    assert d.interval_seconds == 3
+    assert d.cpu_range is None
+    assert d.collect_pid is True
+
+
+def test_framework_config_has_devkit_field() -> None:
+    config = FrameworkConfig.defaults()
+    assert config.devkit.devkit_cmd is None
+    assert config.devkit.duration_seconds == 20
+    assert config.devkit.interval_seconds == 3
+    assert config.devkit.collect_pid is True
+
+
+def test_framework_config_devkit_from_yaml() -> None:
+    # default_config.yaml carries the devkit section; values round-trip.
+    config = FrameworkConfig.defaults()
+    assert config.devkit.duration_seconds == 20
+    assert config.devkit.interval_seconds == 3
+    assert config.devkit.collect_pid is True
+    assert config.devkit.cpu_range is None

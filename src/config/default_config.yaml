@@ -27,3 +27,9 @@ framework:
     cmake_path: cmake
     make_path: make
     build_dir_suffix: build
+  devkit:
+    devkit_cmd: null
+    duration_seconds: 20
+    interval_seconds: 3
+    cpu_range: null
+    collect_pid: true
