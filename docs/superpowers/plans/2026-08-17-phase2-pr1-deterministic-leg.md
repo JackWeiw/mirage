@@ -601,7 +601,9 @@ def test_apply_structural_archetype_enum() -> None:
         {"stage": "comp_stage", "knob": "archetype", "from": "matmul", "to": "hash",
          "rationale": "", "expected_metric": "retiring", "expected_direction": "up"}
     ])
-    assert out["stages"][0]["strategies"][0]["synthesis_config"]["archetype"] == "hash"  # unchanged
+    # stages[0] (mem_stage) is untouched — its synthesis_config has no archetype.
+    assert "archetype" not in out["stages"][0]["strategies"][0]["synthesis_config"]
+    assert out["stages"][0]["strategies"][0]["synthesis_config"]["access_pattern"] == "random"
     assert out["stages"][1]["strategies"][0]["synthesis_config"]["archetype"] == "hash"
 
 
