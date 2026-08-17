@@ -239,3 +239,84 @@ def validate_adjustments(
         accepted.append(adj)
 
     return accepted, rejected
+
+
+# Bounded steps per runtime knob (spec §3).
+_STEP: dict[str, float] = {
+    "compute_ratio": 0.2,
+    "memory_ratio": 0.2,
+    "thread_count": 1.0,
+    "qps": 20.0,
+}
+
+
+def deterministic_revise(
+    instruction: dict[str, Any],
+    report: dict[str, Any],
+    sensitivity: dict[str, dict[str, Any]],
+    history: Any,
+    oscillation_window: int = 3,
+    topdown_threshold_pct: float = 10.0,
+) -> list[dict[str, Any]]:
+    """Assist controller: emit ONE runtime-knob adjustment that reduces the
+    largest-error metric. Pure, no LLM.
+
+    Returns [] if every candidate runtime knob is skip-blocked (toggled in the
+    last `oscillation_window` iterations) -> forces escalation to the LLM tier.
+    """
+    # Largest-error topdown metric not within threshold.
+    topdown = report.get("topdown_l1", {})
+    candidates = [
+        (m, abs(v.get("diff_pct", 0.0)))
+        for m, v in topdown.items()
+        if not v.get("within_threshold", True)
+    ]
+    if not candidates:
+        return []
+    candidates.sort(key=lambda x: x[1], reverse=True)
+    target_metric, _ = candidates[0]
+    err = _error_sign(report, target_metric, topdown_threshold_pct)
+    if err == 0:
+        return []
+    want_down = err > 0
+
+    # Knobs toggled within the window are skip-blocked.
+    recent_moves: set[str] = set()
+    for r in getattr(history, "records", [])[-oscillation_window:]:
+        for mv in getattr(r, "applied_moves", []):
+            recent_moves.add(str(mv["knob"]))
+
+    # Find a runtime knob whose expected_direction reduces this metric.
+    for knob, entry in sensitivity.items():
+        if knob not in RUNTIME_KNOBS:
+            continue
+        if entry.get("verdict") != "controllable":
+            continue
+        if entry.get("target_metric") != target_metric:
+            continue
+        if knob in recent_moves:
+            continue  # skip-blocked
+        direction = entry.get("expected_direction")
+        if direction not in ("up", "down"):
+            continue
+        knob_raises = direction == "up"
+        want_increase = want_down != knob_raises  # XOR (same as the gate)
+        actual = instruction.get("config", {}).get(knob)
+        if not isinstance(actual, int | float):
+            continue
+        step = _STEP.get(knob, 0.1)
+        to = actual + step if want_increase else actual - step
+        dom = KNOB_DOMAINS[knob]
+        to = max(dom["min"], min(dom["max"], to))  # clamp
+        return [
+            {
+                "stage": "",
+                "knob": knob,
+                "from": actual,
+                "to": to,
+                "rationale": f"{target_metric} diff out of threshold; {direction} via {knob}",
+                "expected_metric": target_metric,
+                "expected_direction": direction,
+            }
+        ]
+    return []

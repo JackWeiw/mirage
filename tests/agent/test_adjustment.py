@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from agent.adjustment import apply_adjustments
+from observability.iteration_history import IterationHistory, IterationRecord
 
 
 def _instr() -> dict[str, Any]:
@@ -750,3 +751,57 @@ def test_validate_no_op_move_rejected() -> None:
     )
     assert accepted == []
     assert rejected[0]["reason"] == "no_op_move"
+
+
+def test_deterministic_revise_picks_correct_runtime_knob_direction() -> None:
+    # backend_bound too high (+20); memory_ratio is "up" on backend -> must DECREASE it.
+    instr = {"config": {"compute_ratio": 0.5, "memory_ratio": 0.5, "thread_count": 4, "qps": 100}}
+    from agent.adjustment import deterministic_revise
+
+    adj = deterministic_revise(
+        instr, _report(backend_diff=20.0), _SENS, IterationHistory(customer_name="t")
+    )
+    assert len(adj) == 1
+    assert adj[0]["knob"] == "memory_ratio"
+    assert adj[0]["to"] < 0.5  # decreased
+    assert adj[0]["from"] == 0.5  # from == actual current
+
+
+def test_deterministic_revise_clamps_to_bounds() -> None:
+    # memory_ratio already at min 0.0 and backend too high -> would decrease past 0 -> clamp.
+    instr = {"config": {"compute_ratio": 0.5, "memory_ratio": 0.0, "thread_count": 4, "qps": 100}}
+    from agent.adjustment import deterministic_revise
+
+    adj = deterministic_revise(
+        instr, _report(backend_diff=20.0), _SENS, IterationHistory(customer_name="t")
+    )
+    assert adj[0]["to"] == 0.0
+
+
+def test_deterministic_revise_never_emits_structural() -> None:
+    instr = {"config": {"compute_ratio": 0.5, "memory_ratio": 0.5, "thread_count": 4, "qps": 100}}
+    from agent.adjustment import deterministic_revise
+
+    adj = deterministic_revise(
+        instr, _report(backend_diff=20.0), _SENS, IterationHistory(customer_name="t")
+    )
+    for a in adj:
+        assert a["knob"] in ("compute_ratio", "memory_ratio", "thread_count", "qps")
+
+
+def test_deterministic_revise_skip_blocked_returns_empty() -> None:
+    # If the only candidate knob was toggled within the oscillation window, return [].
+    instr = {"config": {"compute_ratio": 0.5, "memory_ratio": 0.5, "thread_count": 4, "qps": 100}}
+    hist = IterationHistory(customer_name="t")
+    hist.add_record(
+        IterationRecord(
+            iteration=1,
+            converged=False,
+            topdown_diffs={"backend_bound": 20.0},
+            applied_moves=[{"knob": "memory_ratio", "tier": "runtime", "sign": -1}],
+        )
+    )
+    from agent.adjustment import deterministic_revise
+
+    adj = deterministic_revise(instr, _report(backend_diff=20.0), _SENS, hist, oscillation_window=3)
+    assert adj == []  # memory_ratio skip-blocked; no other runtime knob targets backend
