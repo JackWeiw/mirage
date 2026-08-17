@@ -8,6 +8,11 @@ framework:
     topdown_threshold_pct: 10.0
     memory_threshold_pct: 5.0
     coverage_threshold_pct: 80.0
+    oscillation_window: 3
+    no_improvement_stop: 3
+    run_failure_stop: 2
+    build_failure_stop: 2
+    collect_retry: 1
   run_defaults:
     warmup_seconds: 30
     measurement_seconds: 60

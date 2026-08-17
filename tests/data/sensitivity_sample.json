@@ -1,0 +1,44 @@
+{
+  "rows": [],
+  "verdicts": [
+    {
+      "knob": "working_set_mb",
+      "target_metric": "backend_bound",
+      "expected": "up",
+      "verdict": "controllable",
+      "values": [16, 64, 256],
+      "metric_values": [12.06, 15.28, 16.41]
+    },
+    {
+      "knob": "archetype",
+      "target_metric": "retiring",
+      "expected": "up",
+      "verdict": "controllable",
+      "values": ["compute", "hash", "matmul"],
+      "metric_values": [22.87, 21.33, 63.91]
+    },
+    {
+      "knob": "compute_ratio",
+      "target_metric": "retiring",
+      "expected": "up",
+      "verdict": "controllable",
+      "values": [0.2, 0.5, 0.8],
+      "metric_values": [57.56, 63.82, 65.64]
+    },
+    {
+      "knob": "memory_ratio",
+      "target_metric": "backend_bound",
+      "expected": "up",
+      "verdict": "controllable",
+      "values": [0.2, 0.5, 0.8],
+      "metric_values": [11.19, 17.68, 19.08]
+    },
+    {
+      "knob": "thread_count",
+      "target_metric": "backend_bound",
+      "expected": "dead",
+      "verdict": "dead",
+      "reason": "all points errored"
+    }
+  ]
+}
