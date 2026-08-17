@@ -295,6 +295,67 @@ class TestConvergePath:
         assert call_count >= 1
         # Verify the history file was written.
         assert pathlib.Path(result.history_path).exists()
+        # Verify observed_effects attribution on the first record (iter 0).
+        # iter 0 was a single-adjustment round targeting backend_bound;
+        # observed_effects should contain the delta for that metric.
+        rec0 = pipeline.history.records[0]
+        assert len(rec0.observed_effects) > 0, "observed_effects should be populated"
+        # backend_bound diff moved from negative (too low) toward 0% -> delta != 0.
+        assert "backend_bound" in rec0.observed_effects
+        assert rec0.observed_effects["backend_bound"] != 0.0
+
+
+# ---------------------------------------------------------------------------
+# observed_effects attribution: runtime single-adjustment
+# ---------------------------------------------------------------------------
+
+
+class TestObservedEffectsRuntime:
+    """Verify observed_effects attribution for runtime single-adjustment rounds.
+
+    The loop records per-knob {expected_metric: delta} for single-adjustment
+    rounds.  This test uses degraded mode (runtime-only) and verifies that
+    after a runtime adjustment moves a metric, the previous record's
+    observed_effects reflects the actual delta.
+    """
+
+    def test_runtime_observed_effects_nonzero(self, tmp_path: pathlib.Path) -> None:
+        customer = _customer_profile()
+        seed = _seed_instruction()
+        sens = _sensitivity()
+
+        # Use degraded mode so only runtime tier is available.
+        # The collect stub moves backend_bound with memory_ratio.
+        collect = _make_collect_stub()
+
+        pipeline = Pipeline(
+            output_base_dir=tmp_path,
+            config=_make_config(
+                tmp_path,
+                oscillation_window=10,
+                no_improvement_stop=100,
+            ),
+            agent=None,
+        )
+        pipeline.run_iteration_loop(
+            customer_profile=customer,
+            seed_instruction=seed,
+            sensitivity=sens,
+            max_iter=5,
+            collect=collect,
+            build=_fake_build,
+        )
+        # Find a record with a single adjustment (runtime tier).
+        found_nonzero = False
+        for rec in pipeline.history.records:
+            if (
+                len(rec.adjustments) == 1
+                and len(rec.observed_effects) > 0
+                and any(v != 0.0 for v in rec.observed_effects.values())
+            ):
+                found_nonzero = True
+                break
+        assert found_nonzero, "expected at least one runtime record with non-zero observed_effects"
 
 
 # ---------------------------------------------------------------------------

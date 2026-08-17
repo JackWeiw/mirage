@@ -632,7 +632,6 @@ class Pipeline:
                     continue  # skip this round, no revise
                 run_fail_streak = 0
                 report = self.comparator.compare(customer_profile, collect_result, iteration=i)
-                last_report = report
 
             if report is None:
                 # Defensive: pending_build_fix on the very first iter with
@@ -648,6 +647,31 @@ class Pipeline:
                 # Converged -- record and exit.
                 record = self._make_record(i, report, priority, [])
                 history.add_record(record)
+                # Run attribution for the previous record before breaking.
+                if prev_record is not None and last_report is not None:
+                    if len(prev_record.adjustments) == 1:
+                        metric = str(prev_record.adjustments[0].get("expected_metric", ""))
+                        if metric and metric in report.get("topdown_l1", {}):
+                            old_diff = (
+                                last_report.get("topdown_l1", {})
+                                .get(metric, {})
+                                .get("diff_pct", 0.0)
+                            )
+                            new_diff = (
+                                report.get("topdown_l1", {}).get(metric, {}).get("diff_pct", 0.0)
+                            )
+                            prev_record.observed_effects[metric] = new_diff - old_diff
+                    elif len(prev_record.adjustments) > 1:
+                        for metric in report.get("topdown_l1", {}):
+                            old_diff = (
+                                last_report.get("topdown_l1", {})
+                                .get(metric, {})
+                                .get("diff_pct", 0.0)
+                            )
+                            new_diff = (
+                                report.get("topdown_l1", {}).get(metric, {}).get("diff_pct", 0.0)
+                            )
+                            prev_record.observed_effects[metric] = new_diff - old_diff
                 stop_reason = "converged"
                 break
 
@@ -761,6 +785,7 @@ class Pipeline:
                         new_diff = report.get("topdown_l1", {}).get(metric, {}).get("diff_pct", 0.0)
                         prev_record.observed_effects[metric] = new_diff - old_diff
             prev_record = record
+            last_report = report  # capture for next iteration's attribution
 
             # ---- Termination checks ----
             if build_failed_this_iter:
