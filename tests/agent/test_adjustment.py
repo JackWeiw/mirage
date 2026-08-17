@@ -767,15 +767,16 @@ def test_deterministic_revise_picks_correct_runtime_knob_direction() -> None:
     assert adj[0]["from"] == 0.5  # from == actual current
 
 
-def test_deterministic_revise_clamps_to_bounds() -> None:
-    # memory_ratio already at min 0.0 and backend too high -> would decrease past 0 -> clamp.
+def test_deterministic_revise_boundary_exhausted_returns_empty() -> None:
+    # memory_ratio already at min 0.0 and backend too high -> can't decrease further;
+    # no other runtime knob targets backend_bound -> escalate (return []).
     instr = {"config": {"compute_ratio": 0.5, "memory_ratio": 0.0, "thread_count": 4, "qps": 100}}
     from agent.adjustment import deterministic_revise
 
     adj = deterministic_revise(
         instr, _report(backend_diff=20.0), _SENS, IterationHistory(customer_name="t")
     )
-    assert adj[0]["to"] == 0.0
+    assert adj == []
 
 
 def test_deterministic_revise_never_emits_structural() -> None:
@@ -805,3 +806,35 @@ def test_deterministic_revise_skip_blocked_returns_empty() -> None:
 
     adj = deterministic_revise(instr, _report(backend_diff=20.0), _SENS, hist, oscillation_window=3)
     assert adj == []  # memory_ratio skip-blocked; no other runtime knob targets backend
+
+
+def test_deterministic_revise_no_unsatisfied_metric_returns_empty() -> None:
+    # All metrics within threshold -> nothing to fix.
+    instr = {"config": {"compute_ratio": 0.5, "memory_ratio": 0.5, "thread_count": 4, "qps": 100}}
+    from agent.adjustment import deterministic_revise
+
+    adj = deterministic_revise(
+        instr, _report(backend_diff=2.0), _SENS, IterationHistory(customer_name="t")
+    )
+    assert adj == []  # backend within threshold (2.0 <= 10.0)
+
+
+def test_deterministic_revise_no_runtime_knob_targets_metric_returns_empty() -> None:
+    # bad_speculation has the largest error but _SENS has no runtime knob targeting it
+    # -> the deterministic tier can't help -> escalate (return []).
+    instr = {"config": {"compute_ratio": 0.5, "memory_ratio": 0.5, "thread_count": 4, "qps": 100}}
+    report = {
+        "topdown_l1": {
+            "backend_bound": {"diff_pct": 0.0, "within_threshold": True},
+            "retiring": {"diff_pct": 0.0, "within_threshold": True},
+            "frontend_bound": {"diff_pct": 0.0, "within_threshold": True},
+            "bad_speculation": {"diff_pct": 20.0, "within_threshold": False},
+        },
+        "memory": {"bandwidth_gbps": {"diff_pct": 0.0, "within_threshold": True}},
+        "hotspot_coverage": {"coverage_pct": 85.0},
+        "convergence": {"converged": False, "reason": ""},
+    }
+    from agent.adjustment import deterministic_revise
+
+    adj = deterministic_revise(instr, report, _SENS, IterationHistory(customer_name="t"))
+    assert adj == []

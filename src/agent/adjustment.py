@@ -269,11 +269,11 @@ def deterministic_revise(
     candidates = [
         (m, abs(v.get("diff_pct", 0.0)))
         for m, v in topdown.items()
-        if not v.get("within_threshold", True)
+        if abs(v.get("diff_pct", 0.0)) > topdown_threshold_pct
     ]
     if not candidates:
         return []
-    candidates.sort(key=lambda x: x[1], reverse=True)
+    candidates.sort(key=lambda x: (-x[1], x[0]))  # largest error first; name breaks ties
     target_metric, _ = candidates[0]
     err = _error_sign(report, target_metric, topdown_threshold_pct)
     if err == 0:
@@ -302,12 +302,14 @@ def deterministic_revise(
         knob_raises = direction == "up"
         want_increase = want_down != knob_raises  # XOR (same as the gate)
         actual = instruction.get("config", {}).get(knob)
-        if not isinstance(actual, int | float):
+        if not isinstance(actual, int | float) or isinstance(actual, bool):
             continue
         step = _STEP.get(knob, 0.1)
         to = actual + step if want_increase else actual - step
         dom = KNOB_DOMAINS[knob]
         to = max(dom["min"], min(dom["max"], to))  # clamp
+        if to == actual:
+            continue  # at boundary, can't move in the wanted direction — try next knob
         return [
             {
                 "stage": "",
