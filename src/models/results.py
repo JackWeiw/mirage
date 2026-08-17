@@ -36,6 +36,15 @@ class CollectionResult(BaseModel):
     error: str = ""
 
 
+class RunFailure(BaseModel):
+    """A run/collect failure from run_and_collect (crash / timeout / collect_fail)."""
+
+    reason: str
+    kind: str  # "crash" | "timeout" | "collect_fail"
+    stdout: str = ""
+    stderr: str = ""
+
+
 class PipelineResult(BaseModel):
     """Result of a full pipeline run."""
 
@@ -44,3 +53,8 @@ class PipelineResult(BaseModel):
     comparison_report: dict[str, object] | None = None
     project_dir: str | None = None
     error: str = ""
+    # Phase 2 auto-iteration loop fields.
+    best_iteration: int | None = None
+    degraded: bool = False
+    stop_reason: str = ""
+    history_path: str | None = None
