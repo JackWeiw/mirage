@@ -1,5 +1,7 @@
 """Tests for adjustment application (pure, no LLM/devkit)."""
 
+import json
+import pathlib
 from typing import Any
 
 import pytest
@@ -204,3 +206,50 @@ def test_validate_rejects_bool_for_numeric_knob() -> None:
                 }
             ],
         )
+
+
+def test_apply_adjustments_to_config_writes_runtime_subset(tmp_path: pathlib.Path) -> None:
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(
+        json.dumps({"compute_ratio": 0.5, "memory_ratio": 0.5, "thread_count": 4, "qps": 100})
+    )
+    from agent.adjustment import apply_adjustments_to_config
+
+    apply_adjustments_to_config(
+        cfg_path,
+        [
+            {
+                "knob": "compute_ratio",
+                "from": 0.5,
+                "to": 0.8,
+                "rationale": "",
+                "expected_metric": "retiring",
+                "expected_direction": "up",
+            }
+        ],
+    )
+    data = json.loads(cfg_path.read_text())
+    assert data["compute_ratio"] == 0.8
+    assert data["memory_ratio"] == 0.5  # untouched
+
+
+def test_apply_adjustments_to_config_ignores_structural(tmp_path: pathlib.Path) -> None:
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({"compute_ratio": 0.5}))
+    from agent.adjustment import apply_adjustments_to_config
+
+    apply_adjustments_to_config(
+        cfg_path,
+        [
+            {
+                "knob": "working_set_mb",
+                "from": 64,
+                "to": 256,
+                "rationale": "",
+                "expected_metric": "backend_bound",
+                "expected_direction": "up",
+            }
+        ],
+    )
+    # structural knob silently skipped (it doesn't live in config.json)
+    assert json.loads(cfg_path.read_text()) == {"compute_ratio": 0.5}

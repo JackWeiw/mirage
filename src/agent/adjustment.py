@@ -4,9 +4,9 @@ Pure functions only — no LLM, no devkit, no I/O except apply_adjustments_to_co
 The loop driver (PR 3) wires these into run_iteration_loop.
 """
 
-import json  # noqa: F401 — used by Tasks 6-8
+import json
 import logging
-import pathlib  # noqa: F401 — used by Tasks 6-8
+import pathlib
 from copy import deepcopy
 from typing import Any
 
@@ -40,7 +40,7 @@ def _validate_value(knob: str, to: Any) -> None:
         if to not in dom["values"]:
             raise ValueError(f"invalid value {to!r} for {knob}; not in {dom['values']}")
     elif dom["kind"] in ("int", "float"):
-        if not isinstance(to, (int, float)) or isinstance(to, bool):
+        if not isinstance(to, int | float) or isinstance(to, bool):
             raise ValueError(f"{knob} must be a number, got {type(to).__name__}")
         if dom["kind"] == "int" and not float(to).is_integer():
             raise ValueError(f"{knob} must be an integer, got {to}")
@@ -74,3 +74,22 @@ def apply_adjustments(
                 raise ValueError(f"unknown stage: {stage_name!r}")
             stage["strategies"][0]["synthesis_config"][knob] = adj["to"]
     return out
+
+
+def apply_adjustments_to_config(
+    config_path: pathlib.Path, adjustments: list[dict[str, Any]]
+) -> None:
+    """Read config.json, apply the runtime-knob subset of adjustments, write back.
+
+    Structural knobs are skipped (they live in synthesis_config, not config.json).
+    NOTE: this is a plain (non-atomic) writer used by PR 1 tooling/tests; the
+    loop driver (PR 3) uses write_config_json_atomic for the crash-safe path.
+    """
+    data = json.loads(config_path.read_text())
+    for adj in adjustments:
+        knob = adj["knob"]
+        if knob not in RUNTIME_KNOBS:
+            continue  # structural knobs are not config.json entries
+        _validate_value(knob, adj["to"])
+        data[knob] = adj["to"]
+    config_path.write_text(json.dumps(data, indent=2))
