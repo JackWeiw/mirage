@@ -180,3 +180,45 @@ def test_recent_adjustments() -> None:
     # n<=0 returns all records' adjustments (records[-0:] == records[0:])
     result_zero = history.recent_adjustments(0)
     assert result_zero == result_all
+
+
+def test_no_improvement_for_counts_non_best_refreshes() -> None:
+    history = IterationHistory(customer_name="t")
+    # best=10 (score 1.0); then 3 non-improving runs -> stop
+    history.add_record(IterationRecord(iteration=1, converged=False, topdown_diffs={"b": 10.0}))
+    history.add_record(IterationRecord(iteration=2, converged=False, topdown_diffs={"b": 12.0}))
+    history.add_record(IterationRecord(iteration=3, converged=False, topdown_diffs={"b": 11.0}))
+    history.add_record(IterationRecord(iteration=4, converged=False, topdown_diffs={"b": 13.0}))
+    assert history.no_improvement_for(3) is True
+
+
+def test_no_improvement_resets_on_new_best() -> None:
+    history = IterationHistory(customer_name="t")
+    history.add_record(IterationRecord(iteration=1, converged=False, topdown_diffs={"b": 10.0}))
+    history.add_record(IterationRecord(iteration=2, converged=False, topdown_diffs={"b": 12.0}))
+    history.add_record(
+        IterationRecord(iteration=3, converged=False, topdown_diffs={"b": 5.0})
+    )  # new best
+    assert history.no_improvement_for(3) is False
+
+
+def test_no_improvement_ignores_failed_rounds() -> None:
+    history = IterationHistory(customer_name="t")
+    history.add_record(IterationRecord(iteration=1, converged=False, topdown_diffs={"b": 10.0}))
+    # 2 run-failed rounds: must NOT count as no-improvement (infra, not control)
+    history.add_record(IterationRecord(iteration=2, converged=False, topdown_diffs={}, failed=True))
+    history.add_record(IterationRecord(iteration=3, converged=False, topdown_diffs={}, failed=True))
+    assert history.no_improvement_for(2) is False
+
+
+def test_no_improvement_ignores_build_failed_rounds() -> None:
+    history = IterationHistory(customer_name="t")
+    history.add_record(IterationRecord(iteration=1, converged=False, topdown_diffs={"b": 10.0}))
+    # 2 build-failed rounds: must NOT count as no-improvement (infra, not control)
+    history.add_record(
+        IterationRecord(iteration=2, converged=False, topdown_diffs={}, build_failed=True)
+    )
+    history.add_record(
+        IterationRecord(iteration=3, converged=False, topdown_diffs={}, build_failed=True)
+    )
+    assert history.no_improvement_for(2) is False

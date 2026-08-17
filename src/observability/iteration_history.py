@@ -124,6 +124,29 @@ class IterationHistory(BaseModel):
             out.extend(r.adjustments)
         return out
 
+    def no_improvement_for(self, k: int) -> bool:
+        """True if the last k *non-failed* iterations failed to set a new best score.
+
+        Failed / build-failed rounds are skipped entirely (infra failure, no
+        score) — they neither advance nor reset the streak. A round that
+        refreshes the running minimum resets the streak to 0.
+        """
+        streak = 0
+        best = float("inf")
+        for r in self.records:
+            if r.failed or r.build_failed:
+                continue  # invisible to this streak
+            # belt-and-braces: add_record always sets score, but guard nonetheless
+            score = r.score if r.score is not None else compute_score(r)
+            if score < best:
+                best = score
+                streak = 0
+            else:
+                streak += 1
+                if streak >= k:
+                    return True
+        return False
+
     def save(self, filepath: pathlib.Path) -> pathlib.Path:
         """Save iteration history to JSON file."""
         filepath.write_text(self.model_dump_json(indent=2))
