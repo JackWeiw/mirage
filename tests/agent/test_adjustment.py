@@ -588,3 +588,165 @@ def test_validate_all_rejected_returns_empty_accepted() -> None:
     )
     assert accepted == []
     assert len(rejected) == 1
+
+
+def test_validate_unknown_knob_rejected() -> None:
+    instr = {"config": {"memory_ratio": 0.5}}
+    from agent.adjustment import validate_adjustments
+
+    accepted, rejected = validate_adjustments(
+        [
+            {
+                "stage": "",
+                "knob": "bogus_knob",
+                "from": 1,
+                "to": 2,
+                "rationale": "",
+                "expected_metric": "backend_bound",
+                "expected_direction": "up",
+            }
+        ],
+        instr,
+        _report(backend_diff=20.0),
+        _SENS,
+        tier="runtime",
+    )
+    assert accepted == []
+    assert rejected[0]["reason"] == "unknown_knob"
+
+
+def test_validate_domain_violation_rejected() -> None:
+    instr = {"config": {"memory_ratio": 0.5}}
+    from agent.adjustment import validate_adjustments
+
+    accepted, rejected = validate_adjustments(
+        [
+            {
+                "stage": "",
+                "knob": "memory_ratio",
+                "from": 0.5,
+                "to": "not_a_number",
+                "rationale": "",
+                "expected_metric": "backend_bound",
+                "expected_direction": "up",
+            }
+        ],
+        instr,
+        _report(backend_diff=20.0),
+        _SENS,
+        tier="runtime",
+    )
+    assert accepted == []
+    assert rejected[0]["reason"].startswith("domain_violation:")
+
+
+def test_validate_no_sensitivity_entry_rejected() -> None:
+    # thread_count is a valid runtime knob but has no entry in _SENS, and the adj
+    # carries no expected_metric/expected_direction of its own.
+    instr = {"config": {"thread_count": 4}}
+    from agent.adjustment import validate_adjustments
+
+    accepted, rejected = validate_adjustments(
+        [
+            {
+                "stage": "",
+                "knob": "thread_count",
+                "from": 4,
+                "to": 8,
+                "rationale": "",
+            }
+        ],
+        instr,
+        _report(backend_diff=20.0),
+        _SENS,
+        tier="runtime",
+    )
+    assert accepted == []
+    assert rejected[0]["reason"] == "no_sensitivity_entry"
+
+
+def test_validate_missing_actual_rejected() -> None:
+    # memory_ratio is ABSENT from the instruction's config, so _actual_current returns None.
+    instr: dict[str, Any] = {"config": {}}
+    from agent.adjustment import validate_adjustments
+
+    accepted, rejected = validate_adjustments(
+        [
+            {
+                "stage": "",
+                "knob": "memory_ratio",
+                "from": 0.5,
+                "to": 0.2,
+                "rationale": "",
+                "expected_metric": "backend_bound",
+                "expected_direction": "up",
+            }
+        ],
+        instr,
+        _report(backend_diff=20.0),
+        _SENS,
+        tier="runtime",
+    )
+    assert accepted == []
+    assert rejected[0]["reason"] == "missing_actual"
+
+
+def test_validate_non_numeric_knob_rejected() -> None:
+    # archetype is an enum knob (string values). Its actual is "hash" — non-numeric —
+    # so the sign-based direction check cannot run. Must get a distinct reason,
+    # not the misleading "wrong_direction".
+    instr = {
+        "stages": [
+            {
+                "stage_name": "comp",
+                "strategies": [{"synthesis_config": {"archetype": "hash"}}],
+            }
+        ]
+    }
+    from agent.adjustment import validate_adjustments
+
+    accepted, rejected = validate_adjustments(
+        [
+            {
+                "stage": "comp",
+                "knob": "archetype",
+                "from": "hash",
+                "to": "matmul",
+                "rationale": "",
+                "expected_metric": "retiring",
+                "expected_direction": "up",
+            }
+        ],
+        instr,
+        _report(retiring_diff=-15.0),
+        _SENS,
+        tier="structural",
+    )
+    assert accepted == []
+    assert rejected[0]["reason"] == "non_numeric_knob_direction_uncheckable"
+
+
+def test_validate_no_op_move_rejected() -> None:
+    # to == actual (0.5 -> 0.5) is a no-op move; distinct from wrong_direction.
+    instr = {"config": {"memory_ratio": 0.5}}
+    from agent.adjustment import validate_adjustments
+
+    accepted, rejected = validate_adjustments(
+        [
+            {
+                "stage": "",
+                "knob": "memory_ratio",
+                "from": 0.5,
+                "to": 0.5,
+                "rationale": "",
+                "expected_metric": "backend_bound",
+                "expected_direction": "up",
+            }
+        ],
+        instr,
+        _report(backend_diff=20.0),
+        _SENS,
+        tier="runtime",
+    )
+    assert accepted == []
+    assert rejected[0]["reason"] == "no_op_move"

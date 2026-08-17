@@ -193,6 +193,20 @@ def validate_adjustments(
             rejected.append({**adj, "reason": "metric_already_satisfied"})
             continue
 
+        # The sign-based direction check applies only to numeric knobs. A missing
+        # actual (knob absent from the instruction), a non-numeric actual (enum
+        # knobs like archetype/access_pattern whose direction cannot be sign-
+        # verified), and a no-op (to == actual) each get a distinct reason so an
+        # operator can triage rather than chase a phantom wrong-direction. Full
+        # enum direction verification (per-value metric comparison from the spike
+        # data) is deferred to the LLM structural tier.
+        if actual is None:
+            rejected.append({**adj, "reason": "missing_actual"})
+            continue
+        if not isinstance(to, int | float) or not isinstance(actual, int | float):
+            rejected.append({**adj, "reason": "non_numeric_knob_direction_uncheckable"})
+            continue
+
         # Want to move metric DOWN (err=+1, too high) or UP (err=-1, too low).
         want_down = err > 0
         # direction "up" means knob raises metric; "down" means lowers it.
@@ -203,11 +217,12 @@ def validate_adjustments(
         #   want metric up   + knob raises -> increase knob
         #   want metric up   + knob lowers  -> decrease knob
         want_increase = want_down != knob_raises  # XOR
-        move_sign = (
-            (to - actual) if isinstance(to, int | float) and isinstance(actual, int | float) else 0
-        )
+        move_sign = to - actual
+        if move_sign == 0:
+            rejected.append({**adj, "reason": "no_op_move"})
+            continue
         move_up = move_sign > 0
-        if (want_increase and not move_up) or (not want_increase and move_up) or move_sign == 0:
+        if (want_increase and not move_up) or (not want_increase and move_up):
             rejected.append({**adj, "reason": "wrong_direction"})
             continue
 
