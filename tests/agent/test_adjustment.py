@@ -285,3 +285,22 @@ def test_apply_adjustments_to_config_aborts_on_invalid_keeping_file(tmp_path: pa
         )
     # The on-disk file is unchanged — the first (valid) adjustment was NOT persisted.
     assert json.loads(cfg_path.read_text()) == original
+
+
+def test_load_sensitivity_renames_expected_field(tmp_path: pathlib.Path) -> None:
+    from agent.adjustment import load_sensitivity
+
+    table = load_sensitivity(pathlib.Path(__file__).parent / "data" / "sensitivity_sample.json")
+    e = table["working_set_mb"]
+    assert e["target_metric"] == "backend_bound"
+    assert e["expected_direction"] == "up"  # renamed from spike's "expected"
+    assert e["verdict"] == "controllable"
+    assert e["metric_values"] == [12.06, 15.28, 16.41]
+
+
+def test_load_sensitivity_dead_knob_kept(tmp_path: pathlib.Path) -> None:
+    from agent.adjustment import load_sensitivity
+
+    table = load_sensitivity(pathlib.Path(__file__).parent / "data" / "sensitivity_sample.json")
+    assert table["thread_count"]["verdict"] == "dead"
+    assert table["thread_count"].get("expected_direction") in (None, "dead")

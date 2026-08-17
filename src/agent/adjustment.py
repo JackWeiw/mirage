@@ -93,3 +93,26 @@ def apply_adjustments_to_config(
         _validate_value(knob, adj["to"])
         data[knob] = adj["to"]
     config_path.write_text(json.dumps(data, indent=2))
+
+
+def load_sensitivity(path: pathlib.Path) -> dict[str, dict[str, Any]]:
+    """Load the spike's sensitivity.json verdicts into a per-knob table.
+
+    The spike writes each verdict with an `expected` field ("up"/"down"); this
+    loader renames it to `expected_direction` (the name the controller / gate
+    consult). A dead knob (no `expected`/`target_metric`) is kept with
+    expected_direction=None so callers can see it is inert.
+    """
+    raw = json.loads(path.read_text())
+    verdicts = raw.get("verdicts", raw if isinstance(raw, list) else [])
+    table: dict[str, dict[str, Any]] = {}
+    for v in verdicts:
+        knob = v["knob"]
+        table[knob] = {
+            "target_metric": v.get("target_metric"),
+            "expected_direction": v.get("expected"),
+            "verdict": v.get("verdict", "dead"),
+            "values": v.get("values", []),
+            "metric_values": v.get("metric_values", []),
+        }
+    return table
