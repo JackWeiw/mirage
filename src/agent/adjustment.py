@@ -100,11 +100,11 @@ def load_sensitivity(path: pathlib.Path) -> dict[str, dict[str, Any]]:
 
     The spike writes each verdict with an `expected` field ("up"/"down"); this
     loader renames it to `expected_direction` (the name the controller / gate
-    consult). A dead knob (no `expected`/`target_metric`) is kept with
-    expected_direction=None so callers can see it is inert.
+    consult). A dead knob keeps whatever `expected` value the spike wrote
+    (often the literal string `"dead"`, or `None` when the key is absent).
     """
     raw = json.loads(path.read_text())
-    verdicts = raw.get("verdicts", raw if isinstance(raw, list) else [])
+    verdicts = raw if isinstance(raw, list) else raw.get("verdicts", [])
     table: dict[str, dict[str, Any]] = {}
     for v in verdicts:
         knob = v["knob"]

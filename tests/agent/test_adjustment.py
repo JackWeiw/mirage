@@ -287,10 +287,12 @@ def test_apply_adjustments_to_config_aborts_on_invalid_keeping_file(tmp_path: pa
     assert json.loads(cfg_path.read_text()) == original
 
 
-def test_load_sensitivity_renames_expected_field(tmp_path: pathlib.Path) -> None:
+def test_load_sensitivity_renames_expected_field() -> None:
     from agent.adjustment import load_sensitivity
 
-    table = load_sensitivity(pathlib.Path(__file__).parent / "data" / "sensitivity_sample.json")
+    table = load_sensitivity(
+        pathlib.Path(__file__).parent.parent / "data" / "sensitivity_sample.json"
+    )
     e = table["working_set_mb"]
     assert e["target_metric"] == "backend_bound"
     assert e["expected_direction"] == "up"  # renamed from spike's "expected"
@@ -298,9 +300,41 @@ def test_load_sensitivity_renames_expected_field(tmp_path: pathlib.Path) -> None
     assert e["metric_values"] == [12.06, 15.28, 16.41]
 
 
-def test_load_sensitivity_dead_knob_kept(tmp_path: pathlib.Path) -> None:
+def test_load_sensitivity_dead_knob_kept() -> None:
     from agent.adjustment import load_sensitivity
 
-    table = load_sensitivity(pathlib.Path(__file__).parent / "data" / "sensitivity_sample.json")
+    table = load_sensitivity(
+        pathlib.Path(__file__).parent.parent / "data" / "sensitivity_sample.json"
+    )
     assert table["thread_count"]["verdict"] == "dead"
-    assert table["thread_count"].get("expected_direction") in (None, "dead")
+    assert table["thread_count"]["expected_direction"] == "dead"
+
+
+def test_load_sensitivity_bare_list_shape(tmp_path: pathlib.Path) -> None:
+    """The spike may emit a bare JSON list of verdicts (no wrapping object)."""
+    from agent.adjustment import load_sensitivity
+
+    verdicts = [
+        {
+            "knob": "working_set_mb",
+            "target_metric": "backend_bound",
+            "expected": "up",
+            "verdict": "controllable",
+            "values": [16, 64, 256],
+            "metric_values": [12.06, 15.28, 16.41],
+        },
+        {
+            "knob": "archetype",
+            "target_metric": "retiring",
+            "expected": "up",
+            "verdict": "controllable",
+            "values": ["compute", "hash", "matmul"],
+            "metric_values": [22.87, 21.33, 63.91],
+        },
+    ]
+    p = tmp_path / "bare.json"
+    p.write_text(json.dumps(verdicts))
+    table = load_sensitivity(p)
+    assert len(table) == 2
+    assert table["working_set_mb"]["expected_direction"] == "up"
+    assert table["archetype"]["expected_direction"] == "up"
