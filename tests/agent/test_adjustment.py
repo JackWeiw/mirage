@@ -163,3 +163,44 @@ def test_apply_archetype_invalid_enum_raises() -> None:
                 }
             ],
         )
+
+
+def test_apply_does_not_mutate_input() -> None:
+    import copy
+
+    instr = _instr()
+    snapshot = copy.deepcopy(instr)
+    apply_adjustments(
+        instr,
+        [
+            {
+                "stage": "mem_stage",
+                "knob": "working_set_mb",
+                "from": 64,
+                "to": 256,
+                "rationale": "",
+                "expected_metric": "backend_bound",
+                "expected_direction": "up",
+            }
+        ],
+    )
+    assert instr == snapshot  # input instruction untouched (deepcopy guarantee)
+
+
+def test_validate_rejects_bool_for_numeric_knob() -> None:
+    # bool is a subclass of int in Python; the guard must reject True/False as a number.
+    with pytest.raises(ValueError, match="must be a number"):
+        apply_adjustments(
+            _instr(),
+            [
+                {
+                    "stage": "",
+                    "knob": "thread_count",
+                    "from": 4,
+                    "to": True,
+                    "rationale": "",
+                    "expected_metric": "backend_bound",
+                    "expected_direction": "up",
+                }
+            ],
+        )
