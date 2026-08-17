@@ -118,9 +118,9 @@ for i in range(max_iter):
     # priority. priority >= 2 in degraded mode does NOT mean "stop" — only a
     # runtime-tier stall stops (see Agent-unavailable degradation).
     tier = "runtime" if priority == 1 else "structural"
-    cand = (deterministic_revise(report, sensitivity, history)        if priority == 1
+    cand = (deterministic_revise(instruction, report, sensitivity, history) if priority == 1
             else (agent.revise_instruction(...)[1]                    if agent.is_available()
-                  else deterministic_revise(report, sensitivity, history)))  # degraded
+                  else deterministic_revise(instruction, report, sensitivity, history)))  # degraded
     if priority >= 2 and not agent.is_available(): history.degraded = True
     accepted, rejected = validate_adjustments(cand, instruction, report, sensitivity, tier)  # gate
     log(rejected)
@@ -419,7 +419,10 @@ context (so the LLM does not move a knob against its proven direction).
 Location: `src/agent/adjustment.py` (or `src/agent/sensitivity.py`).
 
 ### 3. `deterministic_revise` (the assist controller — runtime knobs only)
-`deterministic_revise(report, sensitivity, history) -> list[adjustment]`:
+`deterministic_revise(instruction, report, sensitivity, history)
+-> list[adjustment]`. `instruction` is required (not just `report`) so the
+controller can read each runtime knob's **actual current value**, set `from` to
+it, and produce an absolute `to = actual_current ± step`:
 1. Find the largest-error metric in `report["topdown_l1"]` (max
    `abs(diff_pct)` not within threshold) and the memory bandwidth error.
 2. From the sensitivity table, pick **runtime** knobs whose
