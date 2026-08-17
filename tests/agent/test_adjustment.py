@@ -338,3 +338,253 @@ def test_load_sensitivity_bare_list_shape(tmp_path: pathlib.Path) -> None:
     assert len(table) == 2
     assert table["working_set_mb"]["expected_direction"] == "up"
     assert table["archetype"]["expected_direction"] == "up"
+
+
+def _report(backend_diff: float = 0.0, retiring_diff: float = 0.0) -> dict[str, Any]:
+    """A fake comparator report. diff_pct>0 means workload TOO HIGH vs customer."""
+    return {
+        "topdown_l1": {
+            "backend_bound": {
+                "diff_pct": backend_diff,
+                "within_threshold": abs(backend_diff) <= 10.0,
+            },
+            "retiring": {"diff_pct": retiring_diff, "within_threshold": abs(retiring_diff) <= 10.0},
+            "frontend_bound": {"diff_pct": 0.0, "within_threshold": True},
+            "bad_speculation": {"diff_pct": 0.0, "within_threshold": True},
+        },
+        "memory": {"bandwidth_gbps": {"diff_pct": 0.0, "within_threshold": True}},
+        "hotspot_coverage": {"coverage_pct": 85.0},
+        "convergence": {"converged": False, "reason": ""},
+    }
+
+
+_SENS = {
+    "compute_ratio": {
+        "target_metric": "retiring",
+        "expected_direction": "up",
+        "verdict": "controllable",
+    },
+    "memory_ratio": {
+        "target_metric": "backend_bound",
+        "expected_direction": "up",
+        "verdict": "controllable",
+    },
+    "working_set_mb": {
+        "target_metric": "backend_bound",
+        "expected_direction": "up",
+        "verdict": "controllable",
+    },
+}
+
+
+def test_validate_wrong_direction_rejected() -> None:
+    # backend_bound diff = +20 (too high). memory_ratio is an "up" knob on backend_bound,
+    # so to LOWER backend we must DECREASE memory_ratio. Increasing it is wrong direction.
+    instr = {"config": {"memory_ratio": 0.5}}
+    from agent.adjustment import validate_adjustments
+
+    accepted, rejected = validate_adjustments(
+        [
+            {
+                "stage": "",
+                "knob": "memory_ratio",
+                "from": 0.5,
+                "to": 0.8,
+                "rationale": "",
+                "expected_metric": "backend_bound",
+                "expected_direction": "up",
+            }
+        ],
+        instr,
+        _report(backend_diff=20.0),
+        _SENS,
+        tier="runtime",
+    )
+    assert accepted == []
+    assert rejected[0]["reason"] == "wrong_direction"
+
+
+def test_validate_correct_direction_accepted() -> None:
+    instr = {"config": {"memory_ratio": 0.5}}
+    from agent.adjustment import validate_adjustments
+
+    accepted, rejected = validate_adjustments(
+        [
+            {
+                "stage": "",
+                "knob": "memory_ratio",
+                "from": 0.5,
+                "to": 0.2,
+                "rationale": "",
+                "expected_metric": "backend_bound",
+                "expected_direction": "up",
+            }
+        ],
+        instr,
+        _report(backend_diff=20.0),
+        _SENS,
+        tier="runtime",
+    )
+    assert len(accepted) == 1
+    assert rejected == []
+
+
+def test_validate_already_satisfied_rejected() -> None:
+    # backend within threshold -> adjusting it is pointless churn.
+    instr = {"config": {"memory_ratio": 0.5}}
+    from agent.adjustment import validate_adjustments
+
+    accepted, rejected = validate_adjustments(
+        [
+            {
+                "stage": "",
+                "knob": "memory_ratio",
+                "from": 0.5,
+                "to": 0.2,
+                "rationale": "",
+                "expected_metric": "backend_bound",
+                "expected_direction": "up",
+            }
+        ],
+        instr,
+        _report(backend_diff=2.0),
+        _SENS,
+        tier="runtime",
+    )
+    assert accepted == []
+    assert rejected[0]["reason"] == "metric_already_satisfied"
+
+
+def test_validate_secondary_metric_accepted() -> None:
+    # backend is the LARGEST error (+20) but the adjustment targets retiring (also
+    # unsatisfied, -15 = too low). retiring is "up"; workload too low -> increase.
+    # The gate must ACCEPT this secondary-metric move (not largest-error coupled).
+    instr = {"config": {"compute_ratio": 0.5}}
+    from agent.adjustment import validate_adjustments
+
+    accepted, _ = validate_adjustments(
+        [
+            {
+                "stage": "",
+                "knob": "compute_ratio",
+                "from": 0.5,
+                "to": 0.8,
+                "rationale": "",
+                "expected_metric": "retiring",
+                "expected_direction": "up",
+            }
+        ],
+        instr,
+        _report(backend_diff=20.0, retiring_diff=-15.0),
+        _SENS,
+        tier="runtime",
+    )
+    assert len(accepted) == 1
+
+
+def test_validate_tier_ownership_drops_runtime_on_structural() -> None:
+    instr = {"config": {"memory_ratio": 0.5}, "stages": []}
+    from agent.adjustment import validate_adjustments
+
+    accepted, rejected = validate_adjustments(
+        [
+            {
+                "stage": "",
+                "knob": "memory_ratio",
+                "from": 0.5,
+                "to": 0.2,
+                "rationale": "",
+                "expected_metric": "backend_bound",
+                "expected_direction": "up",
+            }
+        ],
+        instr,
+        _report(backend_diff=20.0),
+        _SENS,
+        tier="structural",
+    )
+    assert accepted == []
+    assert rejected[0]["reason"] == "runtime_knob_not_owned_on_structural_tier"
+
+
+def test_validate_tier_ownership_drops_structural_on_runtime() -> None:
+    instr = {
+        "stages": [
+            {
+                "stage_name": "mem_stage",
+                "strategies": [{"synthesis_config": {"working_set_mb": 64}}],
+            }
+        ]
+    }
+    from agent.adjustment import validate_adjustments
+
+    accepted, rejected = validate_adjustments(
+        [
+            {
+                "stage": "mem_stage",
+                "knob": "working_set_mb",
+                "from": 64,
+                "to": 256,
+                "rationale": "",
+                "expected_metric": "backend_bound",
+                "expected_direction": "up",
+            }
+        ],
+        instr,
+        _report(backend_diff=20.0),
+        _SENS,
+        tier="runtime",
+    )
+    assert accepted == []
+    assert rejected[0]["reason"] == "structural_knob_not_owned_on_runtime_tier"
+
+
+def test_validate_from_mismatch_warns_but_keeps() -> None:
+    # from=0.2 but actual=0.5; the gate re-derives 0.5->0.2 (correct direction) and accepts.
+    instr = {"config": {"memory_ratio": 0.5}}
+    from agent.adjustment import validate_adjustments
+
+    accepted, _rejected = validate_adjustments(
+        [
+            {
+                "stage": "",
+                "knob": "memory_ratio",
+                "from": 0.2,
+                "to": 0.2,
+                "rationale": "",
+                "expected_metric": "backend_bound",
+                "expected_direction": "up",
+            }
+        ],
+        instr,
+        _report(backend_diff=20.0),
+        _SENS,
+        tier="runtime",
+    )
+    assert len(accepted) == 1  # accepted despite stale from
+    # (warning is logged, not returned; not assertable here without a log spy)
+
+
+def test_validate_all_rejected_returns_empty_accepted() -> None:
+    instr = {"config": {"memory_ratio": 0.5}}
+    from agent.adjustment import validate_adjustments
+
+    accepted, rejected = validate_adjustments(
+        [
+            {
+                "stage": "",
+                "knob": "memory_ratio",
+                "from": 0.5,
+                "to": 0.8,
+                "rationale": "",
+                "expected_metric": "backend_bound",
+                "expected_direction": "up",
+            }
+        ],
+        instr,
+        _report(backend_diff=20.0),
+        _SENS,
+        tier="runtime",
+    )
+    assert accepted == []
+    assert len(rejected) == 1

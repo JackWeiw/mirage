@@ -116,3 +116,111 @@ def load_sensitivity(path: pathlib.Path) -> dict[str, dict[str, Any]]:
             "metric_values": v.get("metric_values", []),
         }
     return table
+
+
+def _actual_current(instruction: dict[str, Any], adj: dict[str, Any]) -> Any:
+    """Read the knob's actual current value from the instruction."""
+    knob = adj["knob"]
+    if knob in RUNTIME_KNOBS:
+        return instruction.get("config", {}).get(knob)
+    stage_name = adj.get("stage", "")
+    stage = next(
+        (s for s in instruction.get("stages", []) if s.get("stage_name") == stage_name), None
+    )
+    if stage is None:
+        return None
+    return stage.get("strategies", [{}])[0].get("synthesis_config", {}).get(knob)
+
+
+def _error_sign(report: dict[str, Any], metric: str, threshold: float) -> int:
+    """+1 if workload metric is too high (diff_pct>0 beyond threshold), -1 too low, 0 satisfied."""
+    diff = report.get("topdown_l1", {}).get(metric, {}).get("diff_pct", 0.0)
+    if abs(diff) <= threshold:
+        return 0
+    return 1 if diff > 0 else -1
+
+
+def validate_adjustments(
+    adjustments: list[dict[str, Any]],
+    instruction: dict[str, Any],
+    report: dict[str, Any],
+    sensitivity: dict[str, dict[str, Any]],
+    tier: str,
+    topdown_threshold_pct: float = 10.0,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Gate every adjustment list (deterministic or LLM) before apply_adjustments.
+
+    Returns (accepted, rejected). Each rejected carries a `reason`.
+    See spec §1b: domain, tier-ownership, direction (decoupled from largest
+    error), from-mismatch (warn only).
+    """
+    accepted: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+
+    for adj in adjustments:
+        knob = adj["knob"]
+        # Domain.
+        if knob not in KNOB_DOMAINS:
+            rejected.append({**adj, "reason": "unknown_knob"})
+            continue
+        try:
+            _validate_value(knob, adj["to"])
+        except ValueError as exc:
+            rejected.append({**adj, "reason": f"domain_violation:{exc}"})
+            continue
+
+        # Tier ownership.
+        is_runtime = knob in RUNTIME_KNOBS
+        if tier == "structural" and is_runtime:
+            rejected.append({**adj, "reason": "runtime_knob_not_owned_on_structural_tier"})
+            continue
+        if tier == "runtime" and not is_runtime:
+            rejected.append({**adj, "reason": "structural_knob_not_owned_on_runtime_tier"})
+            continue
+
+        # Direction (decoupled from largest error): uses ACTUAL current, not from.
+        actual = _actual_current(instruction, adj)
+        to = adj["to"]
+        entry = sensitivity.get(knob, {})
+        metric = adj.get("expected_metric") or entry.get("target_metric")
+        direction = adj.get("expected_direction") or entry.get("expected_direction")
+        if metric is None or direction is None:
+            rejected.append({**adj, "reason": "no_sensitivity_entry"})
+            continue
+
+        err = _error_sign(report, metric, topdown_threshold_pct)
+        if err == 0:
+            rejected.append({**adj, "reason": "metric_already_satisfied"})
+            continue
+
+        # Want to move metric DOWN (err=+1, too high) or UP (err=-1, too low).
+        want_down = err > 0
+        # direction "up" means knob raises metric; "down" means lowers it.
+        knob_raises = direction == "up"
+        # Required knob move sign to reduce error:
+        #   want metric down + knob raises -> decrease knob (to<actual)
+        #   want metric down + knob lowers  -> increase knob
+        #   want metric up   + knob raises -> increase knob
+        #   want metric up   + knob lowers  -> decrease knob
+        want_increase = want_down != knob_raises  # XOR
+        move_sign = (
+            (to - actual) if isinstance(to, int | float) and isinstance(actual, int | float) else 0
+        )
+        move_up = move_sign > 0
+        if (want_increase and not move_up) or (not want_increase and move_up) or move_sign == 0:
+            rejected.append({**adj, "reason": "wrong_direction"})
+            continue
+
+        # from-mismatch: warn only.
+        if adj.get("from") is not None and adj["from"] != actual:
+            _log.warning(
+                "adjustment from-mismatch: knob=%s from=%s actual=%s to=%s",
+                knob,
+                adj["from"],
+                actual,
+                to,
+            )
+
+        accepted.append(adj)
+
+    return accepted, rejected
