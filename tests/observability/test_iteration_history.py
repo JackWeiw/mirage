@@ -140,3 +140,43 @@ def test_failed_records_excluded_from_best_iteration() -> None:
     history.add_record(good)
     history.add_record(crash)
     assert history.best_iteration == 1  # crash excluded; best stays the good one
+
+
+def test_build_failed_records_excluded_from_best_iteration() -> None:
+    history = IterationHistory(customer_name="t")
+    good = IterationRecord(iteration=1, converged=False, topdown_diffs={"b": 4.0})
+    bad_build = IterationRecord(iteration=2, converged=False, topdown_diffs={}, build_failed=True)
+    history.add_record(good)
+    history.add_record(bad_build)
+    assert history.best_iteration == 1  # build failure excluded; best stays the good one
+
+
+def test_recent_adjustments() -> None:
+    history = IterationHistory(customer_name="t")
+    adj_a = [{"knob": "a", "to": 1.0}]
+    adj_b = [{"knob": "b", "to": 2.0}]
+    adj_c = [{"knob": "c", "to": 3.0}, {"knob": "d", "to": 4.0}]
+    for i, adj in enumerate([adj_a, adj_b, adj_c]):
+        history.add_record(
+            IterationRecord(
+                iteration=i + 1, converged=False, topdown_diffs={"b": 5.0}, adjustments=adj
+            )
+        )
+    # last 2 records → b + c adjustments (flat)
+    result_2 = history.recent_adjustments(2)
+    assert result_2 == [
+        {"knob": "b", "to": 2.0},
+        {"knob": "c", "to": 3.0},
+        {"knob": "d", "to": 4.0},
+    ]
+    # n > len(records) is safe: Python list slicing just returns all
+    result_all = history.recent_adjustments(10)
+    assert result_all == [
+        {"knob": "a", "to": 1.0},
+        {"knob": "b", "to": 2.0},
+        {"knob": "c", "to": 3.0},
+        {"knob": "d", "to": 4.0},
+    ]
+    # n<=0 returns all records' adjustments (records[-0:] == records[0:])
+    result_zero = history.recent_adjustments(0)
+    assert result_zero == result_all

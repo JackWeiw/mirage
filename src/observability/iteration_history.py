@@ -60,6 +60,8 @@ class IterationHistory(BaseModel):
     records: list[IterationRecord] = Field(default_factory=list)
     best_iteration: int | None = None
     total_iterations: int = 0
+    # set True by the loop driver (PR 3) when the agent is unavailable and the
+    # run degrades to runtime-tier-only; surfaced in PipelineResult for honest reporting.
     degraded: bool = False
     _best_index: int = PrivateAttr(default=0)
 
@@ -84,6 +86,8 @@ class IterationHistory(BaseModel):
             self._best_index = new_index
             return
         current_best = self.records[self._best_index]
+        # belt-and-braces: should never be True given the early-return above;
+        # failed records never enter _best_index, so current_best is always non-failed.
         if (
             current_best.failed
             or current_best.build_failed
@@ -114,6 +118,7 @@ class IterationHistory(BaseModel):
 
     def recent_adjustments(self, n: int) -> list[dict[str, object]]:
         """Flat list of raw adjustments from the last n records."""
+        # n<=0 returns all records' adjustments (records[-0:] == records[0:])
         out: list[dict[str, object]] = []
         for r in self.records[-n:]:
             out.extend(r.adjustments)
