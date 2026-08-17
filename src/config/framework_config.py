@@ -16,6 +16,11 @@ class ComparisonConfig(BaseModel):
     topdown_threshold_pct: float = 10.0
     memory_threshold_pct: float = 5.0
     coverage_threshold_pct: float = 80.0
+    oscillation_window: int = 3  # iters looked back for knob direction reversals
+    no_improvement_stop: int = 3  # K consecutive iters w/o a new best score -> stop
+    run_failure_stop: int = 2  # consecutive run/collect failures -> stop
+    build_failure_stop: int = 2  # consecutive structural build failures -> stop
+    collect_retry: int = 1  # retries on a transient collect/timeout
 
 
 class RunDefaults(BaseModel):
