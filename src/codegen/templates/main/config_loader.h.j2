@@ -1,8 +1,11 @@
 #pragma once
 #include <string>
-#include <nlohmann/json.hpp>
 #include <fstream>
+#include <sstream>
+#include <cstdlib>
+#include <cctype>
 
+// Runtime configuration read from config.json at process start.
 struct RunConfig {
     int thread_count;
     int qps;
@@ -12,16 +15,54 @@ struct RunConfig {
     double memory_ratio;
 };
 
+// Minimal, dependency-free reader for the flat config.json object this
+// project's codegen emits. nlohmann/json.hpp is NOT available on the bare
+// ARM target, so we parse the fixed schema (six numeric fields) directly
+// rather than pulling in a JSON library. The reader looks up each known key,
+// skips to the value after the next ':', and parses the number with strtod
+// (so ints and doubles both parse). Missing or non-numeric keys fall back to
+// the codegen-time defaults baked below. This is NOT a general JSON parser;
+// it handles only { "key": <number>, ... }.
 inline RunConfig load_config(const std::string& config_path) {
-    std::ifstream file(config_path);
-    nlohmann::json j = nlohmann::json::parse(file);
-
     RunConfig cfg;
-    cfg.thread_count = j.value("thread_count", {{ config.thread_count | default(4) }});
-    cfg.qps = j.value("qps", {{ config.qps | default(100) }});
-    cfg.warmup_seconds = j.value("warmup_seconds", {{ config.warmup_seconds | default(30) }});
-    cfg.measurement_seconds = j.value("measurement_seconds", {{ config.measurement_seconds | default(60) }});
-    cfg.compute_ratio = j.value("compute_ratio", {{ config.compute_ratio | default(0.5) }});
-    cfg.memory_ratio = j.value("memory_ratio", {{ config.memory_ratio | default(0.5) }});
+    cfg.thread_count = {{ config.thread_count | default(4) }};
+    cfg.qps = {{ config.qps | default(100) }};
+    cfg.warmup_seconds = {{ config.warmup_seconds | default(30) }};
+    cfg.measurement_seconds = {{ config.measurement_seconds | default(60) }};
+    cfg.compute_ratio = {{ config.compute_ratio | default(0.5) }};
+    cfg.memory_ratio = {{ config.memory_ratio | default(0.5) }};
+
+    std::ifstream file(config_path);
+    if (!file) return cfg;  // no config file -> baked defaults
+    std::stringstream ss;
+    ss << file.rdbuf();
+    const std::string s = ss.str();
+
+    // Find "key", then parse the number following the next ':'. Returns true
+    // and sets *out on success; false if the key is missing or its value is
+    // not a number. strtod skips leading whitespace itself.
+    auto read_double = [&s](const std::string& key, double* out) -> bool {
+        std::string needle = "\"" + key + "\"";
+        size_t k = s.find(needle);
+        if (k == std::string::npos) return false;
+        size_t c = s.find(':', k + needle.size());
+        if (c == std::string::npos) return false;
+        size_t p = c + 1;
+        while (p < s.size() && std::isspace(static_cast<unsigned char>(s[p]))) ++p;
+        if (p >= s.size()) return false;
+        char* end = nullptr;
+        double v = std::strtod(s.c_str() + p, &end);
+        if (end == s.c_str() + p) return false;  // not a number
+        *out = v;
+        return true;
+    };
+
+    double v = 0.0;
+    if (read_double("thread_count", &v)) cfg.thread_count = static_cast<int>(v);
+    if (read_double("qps", &v)) cfg.qps = static_cast<int>(v);
+    if (read_double("warmup_seconds", &v)) cfg.warmup_seconds = static_cast<int>(v);
+    if (read_double("measurement_seconds", &v)) cfg.measurement_seconds = static_cast<int>(v);
+    if (read_double("compute_ratio", &v)) cfg.compute_ratio = v;
+    if (read_double("memory_ratio", &v)) cfg.memory_ratio = v;
     return cfg;
 }
