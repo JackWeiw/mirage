@@ -253,3 +253,35 @@ def test_apply_adjustments_to_config_ignores_structural(tmp_path: pathlib.Path) 
     )
     # structural knob silently skipped (it doesn't live in config.json)
     assert json.loads(cfg_path.read_text()) == {"compute_ratio": 0.5}
+
+
+def test_apply_adjustments_to_config_aborts_on_invalid_keeping_file(tmp_path: pathlib.Path) -> None:
+    cfg_path = tmp_path / "config.json"
+    original = {"compute_ratio": 0.5, "thread_count": 4}
+    cfg_path.write_text(json.dumps(original))
+    from agent.adjustment import apply_adjustments_to_config
+
+    with pytest.raises(ValueError):
+        apply_adjustments_to_config(
+            cfg_path,
+            [
+                {
+                    "knob": "compute_ratio",
+                    "from": 0.5,
+                    "to": 0.8,
+                    "rationale": "",
+                    "expected_metric": "retiring",
+                    "expected_direction": "up",
+                },
+                {
+                    "knob": "thread_count",
+                    "from": 4,
+                    "to": -1,
+                    "rationale": "",
+                    "expected_metric": "backend_bound",
+                    "expected_direction": "up",
+                },  # out of bounds (min=1)
+            ],
+        )
+    # The on-disk file is unchanged — the first (valid) adjustment was NOT persisted.
+    assert json.loads(cfg_path.read_text()) == original
