@@ -1,27 +1,43 @@
-"""End-to-end pipeline orchestration for Phase 1.
+"""End-to-end pipeline orchestration for Phase 1 + Phase 2 auto-iteration loop.
 
 Phase 1: Manual-driven, no auto-iteration. Each step callable individually
-or the full pipeline run in sequence. Agent is optional — works in local-only mode.
+or the full pipeline run in sequence. Agent is optional -- works in local-only mode.
+
+Phase 2: run_iteration_loop is the two-tier closed-loop controller
+(collect -> compare -> decide priority -> tier -> gate -> apply -> record),
+with termination on convergence / max_iter / oscillation / no-improvement /
+run-failure-streak / build-failure-streak / degraded-stall.
 """
 
+import math
 import pathlib
 import subprocess
 import time
+from collections.abc import Callable
 from typing import Any
 
+from agent.adjustment import (
+    apply_adjustments,
+    deterministic_revise,
+    validate_adjustments,
+)
 from agent.agent_core import AgentCore
 from agent.strategy import decide_iteration_priority
 from codegen.call_tree import SkeletonDescriptor
 from codegen.generator import WorkloadGenerator
 from config.framework_config import FrameworkConfig
 from harness.build_runner import BuildRunner
+from harness.config_writer import write_config_json_atomic
 from harness.execution_runner import ExecutionRunner
 from harness.metrics_collector import MetricsCollector
 from harness.run_config import RunConfig
 from ingestion.flamegraph_parser import FlamegraphParser
 from ingestion.topdown_parser import TopdownParser
 from models.results import PipelineResult, RunFailure
-from observability.iteration_history import IterationHistory, IterationRecord
+from observability.iteration_history import (
+    IterationHistory,
+    IterationRecord,
+)
 from observability.logging import get_logger
 from observability.telemetry import PipelineTelemetry
 from profile.comparator import ProfileComparator
@@ -57,7 +73,10 @@ class Pipeline:
         self.flamegraph_parser = FlamegraphParser()
         self.topdown_parser = TopdownParser()
         self.comparator = ProfileComparator(config=self.config.comparison)
-        self.agent = agent or AgentCore(config=self.config.agent)
+        # Respect an explicit agent=None (local-only / degraded mode).
+        self.agent: AgentCore | None = (
+            agent if agent is not None else AgentCore(config=self.config.agent)
+        )
         self.generator = WorkloadGenerator()
         self.build_runner = BuildRunner(
             cmake_path=self.config.harness.cmake_path,
@@ -128,7 +147,7 @@ class Pipeline:
 
         if instruction is not None:
             logger.info("using_manual_instruction")
-        elif self.agent.is_available():
+        elif self.agent is not None and self.agent.is_available():
             logger.info("running_agent_chain")
             profile_json = customer_profile.model_dump_json()
             instruction = self.agent.run_full_chain(profile_json)
@@ -398,3 +417,378 @@ class Pipeline:
         except Exception as e:
             logger.error("pipeline_failed", error=str(e))
             return PipelineResult(success=False, error=str(e))
+
+    # ------------------------------------------------------------------
+    # Phase 2 -- auto-iteration loop driver (two-tier)
+    # ------------------------------------------------------------------
+
+    def _build_instruction(
+        self,
+        instruction: dict[str, Any],
+        build: Callable[[dict[str, Any]], str | None],
+    ) -> str | None:
+        """Build the initial binary via the caller-supplied build callable."""
+        return build(instruction)
+
+    @staticmethod
+    def _make_record(
+        i: int,
+        report: dict[str, Any],
+        priority: int,
+        adjustments: list[dict[str, Any]],
+        applied_moves: list[dict[str, Any]] | None = None,
+    ) -> IterationRecord:
+        """Build an IterationRecord from a comparison report.
+
+        Leaves score=None so IterationHistory.add_record computes it via
+        compute_score (the normalized multi-dim score).
+        """
+        td_diffs = {k: v["diff_pct"] for k, v in report.get("topdown_l1", {}).items()}
+        bw_diff = report.get("memory", {}).get("bandwidth_gbps", {}).get("diff_pct", 0.0)
+        coverage = report.get("hotspot_coverage", {}).get("coverage_pct", 0.0)
+        return IterationRecord(
+            iteration=i,
+            converged=report.get("convergence", {}).get("converged", False),
+            topdown_diffs=td_diffs,
+            memory_diff_pct=bw_diff,
+            coverage_pct=coverage,
+            strategy_priority=priority,
+            adjustments=adjustments,
+            applied_moves=applied_moves or [],
+        )
+
+    @staticmethod
+    def _applied_moves(
+        accepted: list[dict[str, Any]],
+        instruction: dict[str, Any],
+        tier: str,
+    ) -> list[dict[str, Any]]:
+        """Compute per-accepted adjustment {knob, tier, sign} for oscillation tracking.
+
+        sign = sign(to - actual_current).  Reads actual_current from the
+        instruction BEFORE apply_adjustments reassigns it.
+        """
+        from agent.adjustment import RUNTIME_KNOBS
+
+        moves: list[dict[str, Any]] = []
+        for adj in accepted:
+            knob = adj["knob"]
+            to_val = adj["to"]
+            if knob in RUNTIME_KNOBS:
+                actual = instruction.get("config", {}).get(knob)
+            else:
+                stage_name = adj.get("stage", "")
+                stage = next(
+                    (s for s in instruction.get("stages", []) if s.get("stage_name") == stage_name),
+                    None,
+                )
+                actual = (
+                    stage.get("strategies", [{}])[0].get("synthesis_config", {}).get(knob)
+                    if stage is not None
+                    else None
+                )
+            if (
+                isinstance(to_val, int | float)
+                and isinstance(actual, int | float)
+                and not isinstance(to_val, bool)
+                and not isinstance(actual, bool)
+            ):
+                delta = float(to_val) - float(actual)
+                sign = int(math.copysign(1, delta)) if delta != 0 else 0
+            else:
+                sign = 0
+            moves.append({"knob": knob, "tier": tier, "sign": sign})
+        return moves
+
+    def _loop_result(self, history: IterationHistory, stop_reason: str) -> PipelineResult:
+        """Persist history to disk and build the PipelineResult."""
+        history_path = history.save(self.output_base_dir / "history.json")
+        return PipelineResult(
+            success=(stop_reason == "converged"),
+            best_iteration=history.best_iteration,
+            degraded=history.degraded,
+            stop_reason=stop_reason,
+            history_path=str(history_path),
+        )
+
+    def run_iteration_loop(
+        self,
+        customer_profile: Profile,
+        seed_instruction: dict[str, Any] | None = None,
+        sensitivity: dict[str, dict[str, Any]] | None = None,
+        max_iter: int = 10,
+        collect: (Callable[[str, dict[str, Any]], Profile | RunFailure] | None) = None,
+        build: Callable[[dict[str, Any]], str | None] | None = None,
+    ) -> PipelineResult:
+        """Two-tier auto-iteration loop driver (spec 'Two-tier loop driver').
+
+        The loop runs collect -> compare -> decide priority -> tier
+        (runtime = deterministic no-rebuild / structural = LLM
+        regenerate+rebuild) -> gate adjustments -> apply -> record, with
+        termination on convergence, max_iter, oscillation, no-improvement,
+        run-failure-streak, build-failure-streak, or degraded-stall.
+
+        Args:
+            customer_profile: Target customer Profile.
+            seed_instruction: Fallback instruction when agent is unavailable.
+            sensitivity: Per-knob sensitivity table for the deterministic leg.
+            max_iter: Maximum iterations.
+            collect: Injectable collect(binary_path, instruction) -> Profile | RunFailure.
+            build: Injectable build(instruction) -> binary_path | None.
+
+        Returns:
+            PipelineResult with best_iteration, stop_reason, degraded, history_path.
+        """
+        cmp_cfg = self.config.comparison
+        sens: dict[str, dict[str, Any]] = sensitivity or {}
+
+        # Resolve callables (defaults wrap the real Pipeline methods).
+        if build is None:
+
+            def _default_build(instr: dict[str, Any]) -> str | None:
+                pdir = self.output_base_dir / "generated_workload"
+                self.generator.generate(instr, pdir)
+                return self.build_workload(pdir)
+
+            build_fn: Callable[[dict[str, Any]], str | None] = _default_build
+        else:
+            build_fn = build
+
+        if collect is None:
+
+            def _default_collect(binary: str, instr: dict[str, Any]) -> Profile | RunFailure:
+                pdir = pathlib.Path(binary).parent
+                ws = instr.get("config", {}).get(
+                    "warmup_seconds", self.config.run_defaults.warmup_seconds
+                )
+                ms = instr.get("config", {}).get(
+                    "measurement_seconds",
+                    self.config.run_defaults.measurement_seconds,
+                )
+                return self.run_and_collect(binary, pdir, ws, ms)
+
+            collect_fn: Callable[[str, dict[str, Any]], Profile | RunFailure] = _default_collect
+        else:
+            collect_fn = collect
+
+        # --- Instruction acquisition ---
+        agent_available = self.agent is not None and self.agent.is_available()
+        instruction: dict[str, Any] | None = None
+        if agent_available and seed_instruction is None:
+            assert self.agent is not None  # for mypy
+            instruction = self.agent.run_full_chain(customer_profile.model_dump_json())
+        else:
+            instruction = seed_instruction
+        if instruction is None:
+            return PipelineResult(
+                success=False,
+                error="no_instruction_available",
+                stop_reason="no_instruction",
+            )
+
+        # --- Initial build (seed must compile; no recovery) ---
+        binary: str | None = self._build_instruction(instruction, build_fn)
+        if binary is None:
+            return PipelineResult(
+                success=False,
+                error="seed_build_failed",
+                stop_reason="seed_build_failed",
+            )
+
+        # --- Loop state ---
+        history = IterationHistory(customer_name=customer_profile.metadata.customer)
+        self.history = history  # wire back to the Pipeline for inspection
+        run_fail_streak = 0
+        build_fail_streak = 0
+        pending_build_fix = False
+        last_report: dict[str, Any] | None = None
+        prev_record: IterationRecord | None = None
+        stop_reason = "max_iter"  # default if the for loop completes without break
+
+        for i in range(max_iter):
+            # ---- Collect phase ----
+            if pending_build_fix:
+                # The last structural revision did not compile.  Don't run
+                # the (dead) binary; revise straight from the last good
+                # report, with the compiler stderr now in history so the
+                # LLM can self-correct.
+                report = last_report
+                pending_build_fix = False
+            else:
+                collect_result = collect_fn(binary, instruction)
+                if isinstance(collect_result, RunFailure):
+                    run_fail_streak += 1
+                    history.add_record(
+                        IterationRecord(
+                            iteration=i,
+                            converged=False,
+                            failed=True,
+                            failure_reason=collect_result.reason,
+                        )
+                    )
+                    if run_fail_streak >= cmp_cfg.run_failure_stop:
+                        stop_reason = "run_failure_streak"
+                        break
+                    continue  # skip this round, no revise
+                run_fail_streak = 0
+                report = self.comparator.compare(customer_profile, collect_result, iteration=i)
+                last_report = report
+
+            if report is None:
+                # Defensive: pending_build_fix on the very first iter with
+                # no prior report (should not happen -- seed build failure
+                # is caught above).
+                stop_reason = "no_report_available"
+                break
+
+            # ---- Priority + tier ----
+            priority = decide_iteration_priority(report, config=cmp_cfg)
+
+            if priority == 0:
+                # Converged -- record and exit.
+                record = self._make_record(i, report, priority, [])
+                history.add_record(record)
+                stop_reason = "converged"
+                break
+
+            tier = "runtime" if priority == 1 else "structural"
+
+            # ---- Candidate generation ----
+            agent_avail_now = self.agent is not None and self.agent.is_available()
+            runtime_candidates_empty = False
+
+            if priority == 1:
+                # Runtime tier: deterministic fast path.
+                cand = deterministic_revise(
+                    instruction,
+                    report,
+                    sens,
+                    history,
+                    oscillation_window=cmp_cfg.oscillation_window,
+                    topdown_threshold_pct=cmp_cfg.topdown_threshold_pct,
+                )
+                runtime_candidates_empty = len(cand) == 0
+            elif agent_avail_now:
+                # Structural tier, agent available -- LLM leg.
+                # BUG-FIX #2: use [1] (the adjustments), NOT [0].
+                assert self.agent is not None  # for mypy
+                _revised, cand = self.agent.revise_instruction(instruction, report, sens, history)
+            else:
+                # Degraded mode: priority >= 2, agent unavailable.
+                # Force runtime-tier execution (deterministic).
+                history.degraded = True
+                tier = "runtime"  # CRITICAL: force runtime tier in degraded mode
+                cand = deterministic_revise(
+                    instruction,
+                    report,
+                    sens,
+                    history,
+                    oscillation_window=cmp_cfg.oscillation_window,
+                    topdown_threshold_pct=cmp_cfg.topdown_threshold_pct,
+                )
+                runtime_candidates_empty = len(cand) == 0
+
+            # ---- Gate ----
+            accepted, rejected = validate_adjustments(
+                cand,
+                instruction,
+                report,
+                sens,
+                tier,
+                topdown_threshold_pct=cmp_cfg.topdown_threshold_pct,
+            )
+            if rejected:
+                logger.info(
+                    "adjustments_rejected",
+                    iteration=i,
+                    count=len(rejected),
+                    reasons=[r.get("reason") for r in rejected],
+                )
+
+            # ---- Record + apply ----
+            applied = self._applied_moves(accepted, instruction, tier) if accepted else []
+            record = self._make_record(i, report, priority, accepted, applied)
+            build_failed_this_iter = False
+
+            if accepted:
+                # BUG-FIX #1: reassign -- apply_adjustments returns a NEW dict.
+                instruction = apply_adjustments(instruction, accepted)
+                if tier == "structural":
+                    new_binary = self._build_instruction(instruction, build_fn)
+                    if new_binary is None:
+                        build_fail_streak += 1
+                        record.build_failed = True
+                        record.build_stderr = "build_returned_none"  # placeholder
+                        build_failed_this_iter = True
+                        pending_build_fix = True
+                    else:
+                        binary = new_binary
+                        build_fail_streak = 0
+                else:
+                    # Runtime tier: atomic rewrite of project config.json.
+                    # Best-effort -- the test stub may not create a real
+                    # project directory.
+                    project_dir = pathlib.Path(binary).parent
+                    config_path = project_dir / "config.json"
+                    if project_dir.is_dir():
+                        try:
+                            write_config_json_atomic(
+                                config_path,
+                                instruction.get("config", {}),
+                            )
+                        except OSError as exc:
+                            logger.warning("config_write_failed", error=str(exc))
+
+            history.add_record(record)
+
+            # ---- observed_effects attribution (for the PREVIOUS record) ----
+            if prev_record is not None and last_report is not None:
+                if len(prev_record.adjustments) == 1:
+                    # Single-adjustment round: per-knob attribution.
+                    metric = str(prev_record.adjustments[0].get("expected_metric", ""))
+                    if metric and metric in report.get("topdown_l1", {}):
+                        old_diff = (
+                            last_report.get("topdown_l1", {}).get(metric, {}).get("diff_pct", 0.0)
+                        )
+                        new_diff = report.get("topdown_l1", {}).get(metric, {}).get("diff_pct", 0.0)
+                        prev_record.observed_effects[metric] = new_diff - old_diff
+                elif len(prev_record.adjustments) > 1:
+                    # Multi-adjustment (LLM batch): overall deltas only.
+                    for metric in report.get("topdown_l1", {}):
+                        old_diff = (
+                            last_report.get("topdown_l1", {}).get(metric, {}).get("diff_pct", 0.0)
+                        )
+                        new_diff = report.get("topdown_l1", {}).get(metric, {}).get("diff_pct", 0.0)
+                        prev_record.observed_effects[metric] = new_diff - old_diff
+            prev_record = record
+
+            # ---- Termination checks ----
+            if build_failed_this_iter:
+                if build_fail_streak >= cmp_cfg.build_failure_stop:
+                    stop_reason = "build_failure_streak"
+                    break
+                continue
+
+            if history.is_oscillating(cmp_cfg.oscillation_window):
+                stop_reason = "oscillation"
+                break
+
+            if history.no_improvement_for(cmp_cfg.no_improvement_stop):
+                stop_reason = "no_improvement_stop"
+                break
+
+            # Degraded-mode: runtime tier exhausted (all runtime knobs
+            # skip-blocked or boundary-exhausted).  deterministic_revise
+            # returned [] during this iteration's candidate generation.
+            if (
+                history.degraded
+                and runtime_candidates_empty
+                and any(
+                    not v.get("within_threshold", True)
+                    for v in report.get("topdown_l1", {}).values()
+                )
+            ):
+                stop_reason = "runtime_tier_exhausted_agent_unavailable"
+                break
+
+        return self._loop_result(history, stop_reason)
