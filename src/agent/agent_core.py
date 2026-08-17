@@ -21,6 +21,29 @@ PROMPTS_DIR = pathlib.Path(__file__).parent / "prompts"
 _MAX_RETRIES = 3
 _BACKOFF_BASE_SECONDS = 1.0
 
+# How many recent records' adjustments/effects to surface in the revise prompt.
+_RECENT_HISTORY_N = 5
+
+
+def _serialize_recent_history(history: Any) -> str:
+    """Serialize recent adjustments + observed effects for the revise prompt.
+
+    Duck-typed on `history` (an IterationHistory in production, a fake in
+    tests) so the agent module need not import observability.
+    """
+    recs: list[dict[str, Any]] = []
+    recent_records = getattr(history, "records", [])[-_RECENT_HISTORY_N:]
+    for r in recent_records:
+        recs.append(
+            {
+                "adjustments": list(getattr(r, "adjustments", [])),
+                "applied_moves": list(getattr(r, "applied_moves", [])),
+                "observed_effects": dict(getattr(r, "observed_effects", {})),
+                "score": getattr(r, "score", None),
+            }
+        )
+    return json.dumps(recs)
+
 
 class LLMError(RuntimeError):
     """Base error for AgentCore LLM failures."""
@@ -207,3 +230,43 @@ class AgentCore:
         instruction = self.detail_fill(json.dumps(workflow))
         logger.info("agent_chain_detail_fill_done")
         return instruction
+
+    def revise_instruction(
+        self,
+        prior_instruction: dict[str, Any],
+        report: dict[str, Any],
+        sensitivity: dict[str, dict[str, Any]],
+        history: Any,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Revise the prior instruction via the LLM (the realism-preserving leg).
+
+        The LLM owns structural / business-logic revision (diverse, non-regular
+        patterns that resist chip-optimizer over-fitting), constrained by the
+        sensitivity table's proven directions. Returns the revised instruction
+        and the adjustments the LLM applied. The CALLER (loop driver) runs
+        validate_adjustments on the adjustments before apply_adjustments -- this
+        method does NOT self-gate, so a hallucinated wrong-direction adjustment
+        is caught downstream, not here.
+
+        Raises LLMResponseError if the response lacks `revised_instruction`
+        (not a dict) or `adjustments` (not a list of dicts).
+        """
+        template = self._load_prompt("revise_instruction.md")
+        prompt = (
+            template.replace("{prior_instruction}", json.dumps(prior_instruction))
+            .replace("{report}", json.dumps(report))
+            .replace("{sensitivity}", json.dumps(sensitivity))
+            .replace("{recent_history}", _serialize_recent_history(history))
+        )
+        resp = self._call_llm_json(prompt)
+        revised = resp.get("revised_instruction")
+        adjustments = resp.get("adjustments")
+        if not isinstance(revised, dict):
+            raise LLMResponseError(
+                f"revise_instruction response missing 'revised_instruction' dict: {str(resp)[:200]!r}"
+            )
+        if not isinstance(adjustments, list) or not all(isinstance(a, dict) for a in adjustments):
+            raise LLMResponseError(
+                f"revise_instruction response missing 'adjustments' list of dicts: {str(resp)[:200]!r}"
+            )
+        return revised, [dict(a) for a in adjustments]
