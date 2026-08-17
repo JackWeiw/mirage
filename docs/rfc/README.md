@@ -53,5 +53,8 @@ may prompt an RFC.
 | # | Title | Status |
 |---|-------|--------|
 | 0000 | RFC template (not a real RFC) | — |
+| 0001 | [Thread-pool-aware modular codegen](0001-thread-pool-aware-modular-codegen.md) | Draft |
+| 0002 | [Context compaction for automated iteration](0002-context-compaction-for-iteration.md) | Draft |
+| 0003 | [Controllability & feedback-adjustment contract for automated iteration](0003-controllability-and-feedback-adjustment.md) | In Review |
 
 (Add a row per accepted RFC. The template row stays for reference.)
