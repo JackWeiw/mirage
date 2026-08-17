@@ -5,6 +5,8 @@ or the full pipeline run in sequence. Agent is optional — works in local-only 
 """
 
 import pathlib
+import subprocess
+import time
 from typing import Any
 
 from agent.agent_core import AgentCore
@@ -18,7 +20,7 @@ from harness.metrics_collector import MetricsCollector
 from harness.run_config import RunConfig
 from ingestion.flamegraph_parser import FlamegraphParser
 from ingestion.topdown_parser import TopdownParser
-from models.results import PipelineResult
+from models.results import PipelineResult, RunFailure
 from observability.iteration_history import IterationHistory, IterationRecord
 from observability.logging import get_logger
 from observability.telemetry import PipelineTelemetry
@@ -28,6 +30,8 @@ from profile.profile_store import ProfileStore
 from profile.structural_comparator import StructuralComparator
 
 logger = get_logger("pipeline")
+
+_WORKLOAD_PAD_S = 3  # spike's _WORKLOAD_MEASUREMENT_PAD_S; slack for proc.wait
 
 
 class Pipeline:
@@ -61,7 +65,7 @@ class Pipeline:
             build_dir_suffix=self.config.harness.build_dir_suffix,
         )
         self.execution_runner = ExecutionRunner()
-        self.metrics_collector = MetricsCollector()
+        self.metrics_collector = MetricsCollector(devkit_cmd=self.config.devkit.devkit_cmd)
         self.telemetry = PipelineTelemetry(pipeline_id="workload_sim")
         self.history = IterationHistory(customer_name="unknown")
 
@@ -217,6 +221,97 @@ class Pipeline:
             error=result.stderr if not result.success else None,
         )
         return result.model_dump()
+
+    def run_and_collect(
+        self,
+        binary_path: str,
+        project_dir: pathlib.Path,
+        warmup_seconds: int,
+        measurement_seconds: int,
+    ) -> Profile | RunFailure:
+        """Run the existing binary, collect topdown during measurement, parse.
+
+        Mirrors the spike's run_one_point run/collect leg: taskset-pin (if
+        cpu_range configured), warm up, crash-check, collect_topdown(-p pid),
+        wait for exit, parse. Returns a workload Profile or a RunFailure
+        (crash/timeout/collect_fail). Crashes are NOT retried (deterministic);
+        timeouts and collect-failures retry up to collect_retry.
+        """
+        config_path = str((project_dir / "config.json").resolve())
+        binary = str(pathlib.Path(binary_path).resolve())
+        cpu_range = self.config.devkit.cpu_range
+        launch_cmd: list[str] = (
+            ["taskset", "-c", cpu_range, binary, config_path]
+            if cpu_range
+            else [binary, config_path]
+        )
+        try:
+            proc = subprocess.Popen(
+                launch_cmd,
+                cwd=str(project_dir),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        except FileNotFoundError as exc:
+            return RunFailure(reason=f"binary_launch_failed: {exc}", kind="crash")
+
+        time.sleep(warmup_seconds)
+        # Crash during warmup (e.g. a stage segfaulted): no retry.
+        if proc.poll() is not None:
+            try:
+                out, err_out = proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                out, err_out = "<communicate-timeout>", "<communicate-timeout>"
+            return RunFailure(
+                reason=f"workload_exited_during_warmup rc={proc.returncode}",
+                kind="crash",
+                stdout=out or "",
+                stderr=err_out or "",
+            )
+
+        interval = self.config.devkit.interval_seconds
+        pid = proc.pid if self.config.devkit.collect_pid else None
+        td_path = project_dir / "topdown.txt"
+        retries = self.config.comparison.collect_retry
+        last_err = ""
+        for _ in range(retries + 1):
+            coll = self.metrics_collector.collect_topdown(
+                td_path,
+                duration=measurement_seconds,
+                interval=interval,
+                pid=pid,
+            )
+            if coll.success and coll.topdown_path is not None:
+                # Wait for the workload to exit (measurement + pad).
+                try:
+                    proc.wait(timeout=measurement_seconds + _WORKLOAD_PAD_S + 30)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    return RunFailure(reason="workload_hang", kind="timeout")
+                try:
+                    prof = self.metrics_collector.parse_topdown_file(
+                        pathlib.Path(coll.topdown_path)
+                    )
+                except (ValueError, OSError) as exc:
+                    last_err = f"parse_failed: {exc}"
+                    continue
+                if prof.topdown is None:
+                    last_err = "no_topdown_l1_lines"
+                    continue
+                return prof
+            last_err = coll.error or "collect_failed"
+        # Exhausted retries: reap the process, then return a failure.
+        try:
+            proc.wait(timeout=_WORKLOAD_PAD_S + 30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        kind = (
+            "timeout"
+            if "timeout" in last_err.lower() or "hang" in last_err.lower()
+            else "collect_fail"
+        )
+        return RunFailure(reason=last_err, kind=kind)
 
     def compare_results(
         self,
