@@ -222,3 +222,71 @@ def test_no_improvement_ignores_build_failed_rounds() -> None:
         IterationRecord(iteration=3, converged=False, topdown_diffs={}, build_failed=True)
     )
     assert history.no_improvement_for(2) is False
+
+
+def _move_rec(i: int, knob: str, tier: str, sign: int) -> IterationRecord:
+    return IterationRecord(
+        iteration=i,
+        converged=False,
+        topdown_diffs={"b": 10.0},
+        applied_moves=[{"knob": knob, "tier": tier, "sign": sign}],
+    )
+
+
+def test_oscillating_runtime_one_reversal_fires() -> None:
+    history = IterationHistory(customer_name="t")
+    history.add_record(_move_rec(1, "compute_ratio", "runtime", 1))
+    history.add_record(_move_rec(2, "compute_ratio", "runtime", -1))  # reversal
+    assert history.is_oscillating(3) is True
+
+
+def test_oscillating_structural_one_reversal_does_not_fire() -> None:
+    history = IterationHistory(customer_name="t")
+    history.add_record(_move_rec(1, "archetype", "structural", 1))
+    history.add_record(_move_rec(2, "archetype", "structural", -1))  # one reversal only
+    assert history.is_oscillating(3) is False
+
+
+def test_oscillating_structural_full_pingpong_fires() -> None:
+    history = IterationHistory(customer_name="t")
+    history.add_record(_move_rec(1, "archetype", "structural", 1))
+    history.add_record(_move_rec(2, "archetype", "structural", -1))
+    history.add_record(_move_rec(3, "archetype", "structural", 1))  # + - + pingpong, no improve
+    assert history.is_oscillating(3) is True
+
+
+def test_oscillating_same_direction_is_continuation() -> None:
+    history = IterationHistory(customer_name="t")
+    history.add_record(_move_rec(1, "compute_ratio", "runtime", 1))
+    history.add_record(_move_rec(2, "compute_ratio", "runtime", 1))  # same dir, not reversal
+    assert history.is_oscillating(3) is False
+
+
+def test_oscillating_any_single_knob_fires() -> None:
+    history = IterationHistory(customer_name="t")
+    history.add_record(_move_rec(1, "compute_ratio", "runtime", 1))
+    history.add_record(
+        _move_rec(2, "memory_ratio", "runtime", -1)
+    )  # different knob, no reversal per-knob
+    assert history.is_oscillating(3) is False
+
+
+def test_oscillating_structural_pingpong_suppressed_by_improvement() -> None:
+    history = IterationHistory(customer_name="t")
+    # A prior baseline record (outside the window=3) with a WORSE score.
+    baseline = _move_rec(0, "archetype", "structural", 1)
+    baseline.score = 50.0
+    history.add_record(baseline)
+    # Now the window: full ping-pong (+ - +) but scores improve 10 -> 5 -> 2.
+    r1 = _move_rec(1, "archetype", "structural", 1)
+    r1.score = 10.0
+    r2 = _move_rec(2, "archetype", "structural", -1)
+    r2.score = 5.0
+    r3 = _move_rec(3, "archetype", "structural", 1)
+    r3.score = 2.0
+    history.add_record(r1)
+    history.add_record(r2)
+    history.add_record(r3)
+    # window=3 -> recent = [r1,r2,r3], prior = [baseline]. best_before=50, window_best=2
+    # -> improved_in_window=True -> structural ping-pong SUPPRESSED.
+    assert history.is_oscillating(3) is False

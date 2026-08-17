@@ -1,5 +1,6 @@
 """Track iteration results and convergence trends across multiple iterations."""
 
+import itertools
 import json
 import pathlib
 
@@ -145,6 +146,69 @@ class IterationHistory(BaseModel):
                 streak += 1
                 if streak >= k:
                     return True
+        return False
+
+    def is_oscillating(self, window: int) -> bool:
+        """Precise oscillation rule (see spec 'Oscillation detection').
+
+        Per knob, collect the signed moves (from applied_moves) within the
+        last `window` records. A *reversal* is two consecutive moves on the
+        same knob with opposite signs.
+
+        - Runtime knob: one reversal in the window -> oscillation.
+        - Structural knob: a full ping-pong (two reversals: + - + or - + -)
+          AND the window did not improve the best score -> oscillation.
+
+        A no-op record (no applied_moves) is invisible. Same-direction repeats
+        are continuation, not a reversal. Any single knob tripping its rule
+        fires the stop.
+        """
+        # window <= 0 inspects all records (same convention as recent_adjustments).
+        recent = self.records[-window:] if window > 0 else self.records
+        # Best score before this window (for the structural no-improve test).
+        prior = self.records[: max(0, len(self.records) - window)]
+        best_before = min(
+            (r.score for r in prior if not r.failed and not r.build_failed and r.score is not None),
+            default=float("inf"),
+        )
+        window_best = min(
+            (
+                r.score
+                for r in recent
+                if not r.failed and not r.build_failed and r.score is not None
+            ),
+            default=float("inf"),
+        )
+        improved_in_window = best_before != float("inf") and window_best < best_before
+
+        moves_by_knob: dict[str, list[tuple[str, int]]] = {}
+        for r in recent:
+            for mv in r.applied_moves:
+                knob = str(mv["knob"])
+                tier = str(mv["tier"])
+                sign_raw = mv["sign"]
+                if not isinstance(sign_raw, int | float):
+                    continue
+                sign = int(sign_raw)
+                if sign == 0:
+                    continue
+                moves_by_knob.setdefault(knob, []).append((tier, sign))
+
+        def _reversals(seq: list[int]) -> int:
+            count = 0
+            for a, b in itertools.pairwise(seq):
+                if a * b < 0:  # opposite signs
+                    count += 1
+            return count
+
+        for _knob, seq in moves_by_knob.items():
+            signs = [s for (_t, s) in seq]
+            tiers = {t for (t, _s) in seq}
+            reversals = _reversals(signs)
+            if "runtime" in tiers and reversals >= 1:
+                return True
+            if "structural" in tiers and reversals >= 2 and not improved_in_window:
+                return True
         return False
 
     def save(self, filepath: pathlib.Path) -> pathlib.Path:
