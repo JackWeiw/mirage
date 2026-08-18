@@ -838,3 +838,53 @@ def test_deterministic_revise_no_runtime_knob_targets_metric_returns_empty() -> 
 
     adj = deterministic_revise(instr, report, _SENS, IterationHistory(customer_name="t"))
     assert adj == []
+
+
+def test_deterministic_revise_falls_through_unsteerable_largest_metric() -> None:
+    # Largest error is frontend_bound (no runtime knob targets it); the fix must
+    # fall through to the next-largest steerable metric (backend_bound) instead
+    # of dead-ending on iter 0 (issue #56).
+    instr = {"config": {"compute_ratio": 0.5, "memory_ratio": 0.5, "thread_count": 4, "qps": 100}}
+    report = {
+        "topdown_l1": {
+            "backend_bound": {"diff_pct": 20.0, "within_threshold": False},
+            "retiring": {"diff_pct": 0.0, "within_threshold": True},
+            "frontend_bound": {"diff_pct": 30.0, "within_threshold": False},
+            "bad_speculation": {"diff_pct": 0.0, "within_threshold": True},
+        },
+        "memory": {"bandwidth_gbps": {"diff_pct": 0.0, "within_threshold": True}},
+        "hotspot_coverage": {"coverage_pct": 85.0},
+        "convergence": {"converged": False, "reason": ""},
+    }
+    from agent.adjustment import deterministic_revise
+
+    adj = deterministic_revise(instr, report, _SENS, IterationHistory(customer_name="t"))
+    assert len(adj) == 1
+    assert adj[0]["knob"] == "memory_ratio"  # targets backend_bound (the steerable one)
+    assert adj[0]["expected_metric"] == "backend_bound"
+    assert adj[0]["to"] < 0.5  # backend too high + memory_ratio "up" => decrease
+
+
+def test_deterministic_revise_falls_through_boundary_exhausted_metric() -> None:
+    # Largest metric (backend_bound) IS steerable but its only runtime knob
+    # (memory_ratio) is at the boundary (min 0.0) and can't move down; the fix
+    # must fall through to the next steerable metric (retiring via compute_ratio)
+    # instead of dead-ending (issue #56).
+    instr = {"config": {"compute_ratio": 0.5, "memory_ratio": 0.0, "thread_count": 4, "qps": 100}}
+    report = {
+        "topdown_l1": {
+            "backend_bound": {"diff_pct": 30.0, "within_threshold": False},
+            "retiring": {"diff_pct": 20.0, "within_threshold": False},
+            "frontend_bound": {"diff_pct": 0.0, "within_threshold": True},
+            "bad_speculation": {"diff_pct": 0.0, "within_threshold": True},
+        },
+        "memory": {"bandwidth_gbps": {"diff_pct": 0.0, "within_threshold": True}},
+        "hotspot_coverage": {"coverage_pct": 85.0},
+        "convergence": {"converged": False, "reason": ""},
+    }
+    from agent.adjustment import deterministic_revise
+
+    adj = deterministic_revise(instr, report, _SENS, IterationHistory(customer_name="t"))
+    assert len(adj) == 1
+    assert adj[0]["knob"] == "compute_ratio"  # retiring via compute_ratio
+    assert adj[0]["expected_metric"] == "retiring"
