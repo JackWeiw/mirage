@@ -16,7 +16,12 @@ from agent.llm_client import AnthropicClient, OpenAIClient, make_client
 from config.framework_config import AgentConfig
 
 
-def _install_fake_anthropic(monkeypatch: pytest.MonkeyPatch, captured: dict[str, Any]) -> None:
+def _install_fake_anthropic(
+    monkeypatch: pytest.MonkeyPatch,
+    captured: dict[str, Any],
+    *,
+    text: str | None = '{"ok": 1}',
+) -> None:
     fake: Any = types.ModuleType("anthropic")
 
     class _Anthropic:
@@ -27,7 +32,7 @@ def _install_fake_anthropic(monkeypatch: pytest.MonkeyPatch, captured: dict[str,
         def create(self, **_kwargs: Any) -> Any:
             return SimpleNamespace(
                 stop_reason="end_turn",
-                content=[SimpleNamespace(text='{"ok": 1}')],
+                content=[SimpleNamespace(text=text)],
             )
 
     fake.Anthropic = _Anthropic
@@ -37,7 +42,13 @@ def _install_fake_anthropic(monkeypatch: pytest.MonkeyPatch, captured: dict[str,
     monkeypatch.setitem(sys.modules, "anthropic", fake)
 
 
-def _install_fake_openai(monkeypatch: pytest.MonkeyPatch, captured: dict[str, Any]) -> None:
+def _install_fake_openai(
+    monkeypatch: pytest.MonkeyPatch,
+    captured: dict[str, Any],
+    *,
+    finish_reason: str = "length",
+    content: str | None = '{"ok": 2}',
+) -> None:
     fake: Any = types.ModuleType("openai")
 
     class _OpenAI:
@@ -49,8 +60,8 @@ def _install_fake_openai(monkeypatch: pytest.MonkeyPatch, captured: dict[str, An
             return SimpleNamespace(
                 choices=[
                     SimpleNamespace(
-                        message=SimpleNamespace(content='{"ok": 2}'),
-                        finish_reason="length",
+                        message=SimpleNamespace(content=content),
+                        finish_reason=finish_reason,
                     )
                 ],
             )
@@ -147,4 +158,52 @@ def test_transient_exceptions_non_empty_when_sdk_present(
 ) -> None:
     _install_fake_anthropic(monkeypatch, {})
     client = AnthropicClient(AgentConfig(api_key="k", provider="anthropic"))
+    assert len(client.transient_exceptions()) == 3
+
+
+def test_openai_finish_stop_maps_to_end_turn(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The common happy path: finish_reason "stop" -> "end_turn".
+    _install_fake_openai(monkeypatch, {}, finish_reason="stop", content='{"ok": 9}')
+    client = OpenAIClient(AgentConfig(api_key="k", provider="openai"))
+    text, stop = client.complete("prompt")
+    assert text == '{"ok": 9}'
+    assert stop == "end_turn"
+
+
+def test_openai_content_filter_maps_to_max_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A censored/incomplete response is a forced stop -> treat as truncation so
+    # the partial text is not trusted downstream.
+    _install_fake_openai(monkeypatch, {}, finish_reason="content_filter", content="partial")
+    client = OpenAIClient(AgentConfig(api_key="k", provider="openai"))
+    _text, stop = client.complete("prompt")
+    assert stop == "max_tokens"
+
+
+def test_anthropic_complete_raises_on_none_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A tool-use-only response (no text block) must raise, not return "None".
+    _install_fake_anthropic(monkeypatch, {}, text=None)
+    client = AnthropicClient(AgentConfig(api_key="k", provider="anthropic"))
+    with pytest.raises(RuntimeError, match="no text content"):
+        client.complete("prompt")
+
+
+def test_openai_complete_raises_on_none_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A tool-call / content-filter refusal (message.content is None) must raise.
+    _install_fake_openai(monkeypatch, {}, finish_reason="stop", content=None)
+    client = OpenAIClient(AgentConfig(api_key="k", provider="openai"))
+    with pytest.raises(RuntimeError, match="no text content"):
+        client.complete("prompt")
+
+
+def test_openai_transient_exceptions_non_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_openai(monkeypatch, {}, finish_reason="stop")
+    client = OpenAIClient(AgentConfig(api_key="k", provider="openai"))
     assert len(client.transient_exceptions()) == 3

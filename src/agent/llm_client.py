@@ -4,8 +4,8 @@ Mirrors crucible PR #13's brain.Provider pattern: one interface, two endpoint
 shapes, the operator's gateway chosen via ``AgentConfig.provider``. The
 ``api_key`` is passed to the SDK constructor (header-only transport, managed by
 the SDK) and is never placed in a request body, response text, or log line.
-``base_url`` empty means the SDK's own default host is used -- this module never
-injects a vendor official host itself, so an empty ``base_url`` is the only path
+``base_url`` None means the SDK's own default host is used -- this module never
+injects a vendor official host itself, so a None ``base_url`` is the only path
 that can reach a vendor endpoint, and only because the operator left it unset.
 """
 
@@ -72,7 +72,13 @@ class AnthropicClient(LLMClient):
             max_tokens=self.max_tokens,
             messages=[{"role": "user", "content": prompt}],
         )
-        return str(response.content[0].text), str(response.stop_reason)
+        content = response.content[0].text
+        if content is None:
+            raise RuntimeError("Anthropic response had no text content block")
+        stop = response.stop_reason
+        if stop is None:
+            raise RuntimeError("Anthropic response had no stop_reason")
+        return str(content), str(stop)
 
     def transient_exceptions(self) -> tuple[type[Exception], ...]:
         import anthropic
@@ -101,10 +107,16 @@ class OpenAIClient(LLMClient):
             max_completion_tokens=self.max_tokens,
             messages=[{"role": "user", "content": prompt}],
         )
-        text = str(response.choices[0].message.content)
+        content = response.choices[0].message.content
+        if content is None:
+            raise RuntimeError("OpenAI response had no text content")
+        text = str(content)
         # Map OpenAI finish_reason onto the normalized stop_reason AgentCore uses.
-        finish = str(response.choices[0].finish_reason)
-        stop = "max_tokens" if finish == "length" else "end_turn"
+        # "length" (token limit) and "content_filter" (censored/incomplete) both
+        # mean the response was cut short -> treat as truncation so the caller
+        # raises LLMTruncationError instead of trusting partial text.
+        finish = response.choices[0].finish_reason
+        stop = "max_tokens" if finish in ("length", "content_filter") else "end_turn"
         return text, stop
 
     def transient_exceptions(self) -> tuple[type[Exception], ...]:
