@@ -11,6 +11,7 @@ import pathlib
 import time
 from typing import Any, cast
 
+from agent.llm_client import LLMClient, make_client
 from config.framework_config import AgentConfig
 
 logger = logging.getLogger(__name__)
@@ -73,19 +74,13 @@ class AgentCore:
         self.config = config or AgentConfig()
         self.model = self.config.model
         self.max_tokens = self.config.max_tokens
-        self._client: Any = None
-
+        self._client: LLMClient | None = None
         if self.config.api_key is not None:
-            try:
-                import anthropic
-
-                self._client = anthropic.Anthropic(api_key=self.config.api_key)
-            except ImportError:
-                logger.warning("anthropic_not_installed")
+            self._client = make_client(self.config)
 
     def is_available(self) -> bool:
         """Check if the agent can make LLM calls."""
-        return self._client is not None
+        return self._client is not None and self._client.is_available()
 
     def _load_prompt(self, name: str) -> str:
         """Load a prompt template from the prompts directory."""
@@ -95,18 +90,12 @@ class AgentCore:
     def _transient_exceptions(self) -> tuple[type[Exception], ...]:
         """Exception classes worth retrying (rate limit, 5xx, connection).
 
-        Imported lazily so the agent module loads without the SDK installed.
-        Subclasses/tests can override to substitute their own transient types.
+        Delegated to the LLMClient (SDK-specific). Returns () when no client is
+        configured so the retry path degrades safely in offline mode.
         """
-        try:
-            import anthropic
-        except ImportError:
+        if self._client is None:
             return ()
-        return (
-            anthropic.RateLimitError,
-            anthropic.InternalServerError,
-            anthropic.APIConnectionError,
-        )
+        return self._client.transient_exceptions()
 
     def _parse_json_response(self, response_text: str) -> dict[str, Any]:
         """Parse JSON from an LLM response text.
@@ -134,7 +123,7 @@ class AgentCore:
         Raises:
             RuntimeError: If the agent is not available (no API key/client).
         """
-        if self._client is None:
+        if self._client is None or not self._client.is_available():
             raise RuntimeError(
                 "Agent not available — no API key configured. Use local-only mode instead."
             )
@@ -142,17 +131,13 @@ class AgentCore:
         last_exc: Exception | None = None
         for attempt in range(_MAX_RETRIES + 1):
             try:
-                response = self._client.messages.create(
-                    model=self.model,
-                    max_tokens=self.max_tokens,
-                    messages=[{"role": "user", "content": prompt}],
-                )
-                if response.stop_reason == "max_tokens":
+                text, stop_reason = self._client.complete(prompt)
+                if stop_reason == "max_tokens":
                     raise LLMTruncationError(
                         f"LLM response truncated at max_tokens={self.max_tokens}; "
                         "raise max_tokens or split the call."
                     )
-                return str(response.content[0].text)
+                return text
             except transient as exc:
                 last_exc = exc
                 if attempt == _MAX_RETRIES:

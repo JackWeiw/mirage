@@ -1,5 +1,7 @@
 """Tests for FrameworkConfig."""
 
+import pytest
+
 from config.framework_config import (
     AgentConfig,
     ComparisonConfig,
@@ -72,3 +74,20 @@ def test_framework_config_devkit_from_yaml() -> None:
     assert config.devkit.interval_seconds == 3
     assert config.devkit.collect_pid is True
     assert config.devkit.cpu_range is None
+
+
+def test_agent_config_defaults_base_url_none_provider_anthropic() -> None:
+    cfg = AgentConfig()
+    assert cfg.base_url is None
+    assert cfg.provider == "anthropic"
+
+
+def test_agent_config_accepts_openai_provider_with_base_url() -> None:
+    cfg = AgentConfig(provider="openai", base_url="https://gw.example.com/v1", api_key="k")
+    assert cfg.provider == "openai"
+    assert cfg.base_url == "https://gw.example.com/v1"
+
+
+def test_agent_config_rejects_unknown_provider() -> None:
+    with pytest.raises(ValueError):
+        AgentConfig(provider="gemini")

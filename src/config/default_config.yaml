@@ -4,6 +4,8 @@ framework:
   agent:
     model: claude-sonnet-5
     max_tokens: 4096
+    base_url: null
+    provider: anthropic
   comparison:
     topdown_threshold_pct: 10.0
     memory_threshold_pct: 5.0
