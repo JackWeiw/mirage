@@ -888,3 +888,4 @@ def test_deterministic_revise_falls_through_boundary_exhausted_metric() -> None:
     assert len(adj) == 1
     assert adj[0]["knob"] == "compute_ratio"  # retiring via compute_ratio
     assert adj[0]["expected_metric"] == "retiring"
+    assert adj[0]["to"] < 0.5  # retiring too high + compute_ratio "up" => decrease
