@@ -258,11 +258,15 @@ def deterministic_revise(
     oscillation_window: int = 3,
     topdown_threshold_pct: float = 10.0,
 ) -> list[dict[str, Any]]:
-    """Assist controller: emit ONE runtime-knob adjustment that reduces the
-    largest-error metric. Pure, no LLM.
+    """Assist controller: emit ONE runtime-knob adjustment that reduces an
+    out-of-threshold metric. Pure, no LLM.
 
-    Returns [] if every candidate runtime knob is skip-blocked (toggled in the
-    last `oscillation_window` iterations) -> forces escalation to the LLM tier.
+    Walks the candidate metrics largest-error-first and returns the first
+    steerable one (controllable runtime knob, not skip-blocked, not
+    boundary-exhausted). Falls through to the next-largest metric when the
+    largest has no steerable knob (#56). Returns [] only when every candidate
+    metric is unsteerable / skip-blocked / boundary-exhausted -> forces
+    escalation to the LLM tier.
     """
     # Largest-error topdown metric not within threshold.
     topdown = report.get("topdown_l1", {})
@@ -274,11 +278,6 @@ def deterministic_revise(
     if not candidates:
         return []
     candidates.sort(key=lambda x: (-x[1], x[0]))  # largest error first; name breaks ties
-    target_metric, _ = candidates[0]
-    err = _error_sign(report, target_metric, topdown_threshold_pct)
-    if err == 0:
-        return []
-    want_down = err > 0
 
     # Knobs toggled within the window are skip-blocked.
     recent_moves: set[str] = set()
@@ -286,39 +285,50 @@ def deterministic_revise(
         for mv in getattr(r, "applied_moves", []):
             recent_moves.add(str(mv["knob"]))
 
-    # Find a runtime knob whose expected_direction reduces this metric.
-    for knob, entry in sensitivity.items():
-        if knob not in RUNTIME_KNOBS:
+    # Fall through the candidate metrics largest-first: the largest-error metric
+    # may have no steerable runtime knob (e.g. frontend_bound has none) or may be
+    # boundary-exhausted, in which case we try the next-largest metric instead of
+    # dead-ending on iter 0 (#56). Returns [] only when every candidate metric is
+    # unsteerable / skip-blocked / boundary-exhausted.
+    for target_metric, _ in candidates:
+        err = _error_sign(report, target_metric, topdown_threshold_pct)
+        if err == 0:
             continue
-        if entry.get("verdict") != "controllable":
-            continue
-        if entry.get("target_metric") != target_metric:
-            continue
-        if knob in recent_moves:
-            continue  # skip-blocked
-        direction = entry.get("expected_direction")
-        if direction not in ("up", "down"):
-            continue
-        knob_raises = direction == "up"
-        want_increase = want_down != knob_raises  # XOR (same as the gate)
-        actual = instruction.get("config", {}).get(knob)
-        if not isinstance(actual, int | float) or isinstance(actual, bool):
-            continue
-        step = _STEP.get(knob, 0.1)
-        to = actual + step if want_increase else actual - step
-        dom = KNOB_DOMAINS[knob]
-        to = max(dom["min"], min(dom["max"], to))  # clamp
-        if to == actual:
-            continue  # at boundary, can't move in the wanted direction — try next knob
-        return [
-            {
-                "stage": "",
-                "knob": knob,
-                "from": actual,
-                "to": to,
-                "rationale": f"{target_metric} diff out of threshold; {direction} via {knob}",
-                "expected_metric": target_metric,
-                "expected_direction": direction,
-            }
-        ]
+        want_down = err > 0
+
+        # Find a runtime knob whose expected_direction reduces this metric.
+        for knob, entry in sensitivity.items():
+            if knob not in RUNTIME_KNOBS:
+                continue
+            if entry.get("verdict") != "controllable":
+                continue
+            if entry.get("target_metric") != target_metric:
+                continue
+            if knob in recent_moves:
+                continue  # skip-blocked
+            direction = entry.get("expected_direction")
+            if direction not in ("up", "down"):
+                continue
+            knob_raises = direction == "up"
+            want_increase = want_down != knob_raises  # XOR (same as the gate)
+            actual = instruction.get("config", {}).get(knob)
+            if not isinstance(actual, int | float) or isinstance(actual, bool):
+                continue
+            step = _STEP.get(knob, 0.1)
+            to = actual + step if want_increase else actual - step
+            dom = KNOB_DOMAINS[knob]
+            to = max(dom["min"], min(dom["max"], to))  # clamp
+            if to == actual:
+                continue  # at boundary, can't move in the wanted direction
+            return [
+                {
+                    "stage": "",
+                    "knob": knob,
+                    "from": actual,
+                    "to": to,
+                    "rationale": f"{target_metric} diff out of threshold; {direction} via {knob}",
+                    "expected_metric": target_metric,
+                    "expected_direction": direction,
+                }
+            ]
     return []
