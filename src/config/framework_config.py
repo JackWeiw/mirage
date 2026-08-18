@@ -3,13 +3,25 @@
 import pathlib
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class AgentConfig(BaseModel):
     model: str = "claude-sonnet-5"
     max_tokens: int = 4096
     api_key: str | None = None
+    # Custom LLM endpoint (issue #55): the operator's gateway, never a vendor's
+    # official endpoint. None -> the SDK's own default host (degraded/local-only
+    # when api_key is also None). ``provider`` selects the endpoint shape.
+    base_url: str | None = None
+    provider: str = "anthropic"
+
+    @field_validator("provider")
+    @classmethod
+    def _validate_provider(cls, v: str) -> str:
+        if v not in ("anthropic", "openai"):
+            raise ValueError(f"provider must be 'anthropic' or 'openai', got {v!r}")
+        return v
 
 
 class ComparisonConfig(BaseModel):
