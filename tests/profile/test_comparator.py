@@ -37,7 +37,7 @@ def _make_customer_profile() -> Profile:
             ),
         ],
         topdown=TopdownL1(
-            frontend_bound=0.25, backend_bound=0.40, bad_speculation=0.10, retiring=0.25
+            frontend_bound=25.0, backend_bound=40.0, bad_speculation=10.0, retiring=25.0
         ),
         memory=MemoryProfile(bandwidth_gbps=45.2, l3_miss_rate=0.08),
     )
@@ -69,7 +69,7 @@ def _make_workload_profile() -> Profile:
             ),
         ],
         topdown=TopdownL1(
-            frontend_bound=0.22, backend_bound=0.38, bad_speculation=0.11, retiring=0.29
+            frontend_bound=22.0, backend_bound=38.0, bad_speculation=11.0, retiring=29.0
         ),
         memory=MemoryProfile(bandwidth_gbps=43.8, l3_miss_rate=0.07),
     )
@@ -79,16 +79,59 @@ def test_compare_topdown_l1_diff() -> None:
     comparator = ProfileComparator(config=ComparisonConfig())
     report = comparator.compare(_make_customer_profile(), _make_workload_profile())
     td = report["topdown_l1"]
-    assert td["frontend_bound"]["customer"] == 0.25
-    assert td["frontend_bound"]["workload"] == 0.22
-    assert abs(td["frontend_bound"]["diff_pct"] - (-12.0)) < 1.0
+    assert td["frontend_bound"]["customer"] == 25.0
+    assert td["frontend_bound"]["workload"] == 22.0
+    # absolute percentage points: 22.0 - 25.0 = -3.0 pp (NOT the -12% relative).
+    assert abs(td["frontend_bound"]["diff_pct"] - (-3.0)) < 0.01
 
 
 def test_compare_topdown_convergence() -> None:
     comparator = ProfileComparator(config=ComparisonConfig())
     report = comparator.compare(_make_customer_profile(), _make_workload_profile())
-    # frontend_bound diff is -12% > threshold 10%, so NOT converged
-    assert report["convergence"]["converged"] is False
+    # Every L1 metric is within 10pp (frontend -3pp, backend -2pp, bad_spec +1pp,
+    # retiring +4pp), memory within 5%, coverage 100% -> converged.
+    assert report["convergence"]["converged"] is True
+
+
+def test_compare_topdown_nonconvergence_when_diff_exceeds_threshold() -> None:
+    # A > 10pp gap on any L1 metric -> not converged (absolute-pp semantics).
+    cust = Profile(
+        metadata=ProfileMetadata(customer="a", date="2026-08-18"),
+        topdown=TopdownL1(
+            frontend_bound=25.0, backend_bound=40.0, bad_speculation=10.0, retiring=25.0
+        ),
+    )
+    work = Profile(
+        metadata=ProfileMetadata(customer="b", date="2026-08-18"),
+        topdown=TopdownL1(
+            frontend_bound=45.0, backend_bound=40.0, bad_speculation=10.0, retiring=5.0
+        ),
+    )
+    rep = ProfileComparator().compare(cust, work)
+    assert rep["topdown_l1"]["frontend_bound"]["diff_pct"] == 20.0  # 45 - 25
+    assert rep["convergence"]["converged"] is False
+
+
+def test_topdown_diff_pct_is_absolute_pp_not_relative() -> None:
+    # The #46 regression: a small-customer-value metric (frontend 5.14) must NOT
+    # blow up to a huge relative diff. 12.0 - 5.14 = 6.86 pp (absolute), NOT
+    # (12-5.14)/5.14*100 = 133.5% relative.
+    cust = Profile(
+        metadata=ProfileMetadata(customer="a", date="2026-08-18"),
+        topdown=TopdownL1(
+            frontend_bound=5.14, backend_bound=72.79, bad_speculation=3.0, retiring=19.07
+        ),
+    )
+    work = Profile(
+        metadata=ProfileMetadata(customer="b", date="2026-08-18"),
+        topdown=TopdownL1(
+            frontend_bound=12.0, backend_bound=70.0, bad_speculation=3.0, retiring=15.0
+        ),
+    )
+    rep = ProfileComparator().compare(cust, work)
+    assert abs(rep["topdown_l1"]["frontend_bound"]["diff_pct"] - 6.86) < 0.01
+    # 6.86pp is within a 10pp threshold (was 133% -> not within).
+    assert rep["topdown_l1"]["frontend_bound"]["within_threshold"] is True
 
 
 def test_compare_hotspot_coverage() -> None:

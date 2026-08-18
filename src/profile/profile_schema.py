@@ -29,6 +29,16 @@ class HotspotFunction(BaseModel):
 
 
 class TopdownL1(BaseModel):
+    """ARM Top-Down Microarchitecture Analysis level-1 breakdown.
+
+    All four fields are PERCENTAGES (0-100, summing to ~100), NOT fractions.
+    Every parse path yields percentages: `parse_json`/`parse_csv` pass the
+    fixture values through (fixtures store percentages), and `parse_text`
+    parses the devkit `tuner top-down` report which emits percentages natively.
+    The comparator therefore computes ABSOLUTE percentage-point diffs
+    (workload - customer) against `topdown_threshold_pct`, not relative diffs.
+    """
+
     frontend_bound: float
     backend_bound: float
     bad_speculation: float

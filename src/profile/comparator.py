@@ -104,7 +104,13 @@ class ProfileComparator:
             c_val = getattr(customer, m)
             w_val = getattr(workload, m)
             diff = w_val - c_val
-            diff_pct = (diff / c_val) * 100.0 if c_val != 0 else 0.0
+            # diff_pct is ABSOLUTE percentage points (w - c): Topdown L1 metrics
+            # are themselves percentages, so the pp gap is the base-invariant
+            # error. The relative (w-c)/c*100 amplified small-customer-value
+            # metrics (e.g. frontend 5.14 -> 133%) so they dominated priority;
+            # absolute pp matches the downstream loop's contract (the gate and
+            # decide_iteration_priority already treat diff_pct as pp). (#46)
+            diff_pct = float(diff)
             within = abs(diff_pct) <= self.topdown_threshold_pct
             report[m] = {
                 "customer": c_val,
