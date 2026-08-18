@@ -5,7 +5,11 @@
     "platform": "arm64",
     "neoverse_core": "N2",
     "software_stack": [
-      {"name": "folly", "version": "2.1.0", "compile_flags": "-O2 -march=armv8.2-a"}
+      {
+        "name": "folly",
+        "version": "2.1.0",
+        "compile_flags": "-O2 -march=armv8.2-a"
+      }
     ]
   },
   "hotspots": [
@@ -15,7 +19,12 @@
       "source": "open_source",
       "self_pct": 12.5,
       "cumulative_pct": 35.2,
-      "call_path": ["main", "Server::handleRequest", "AsyncProcessor::process", "folly::futures::detail::FutureImpl::then"]
+      "call_path": [
+        "main",
+        "Server::handleRequest",
+        "AsyncProcessor::process",
+        "folly::futures::detail::FutureImpl::then"
+      ]
     },
     {
       "function": "CustomerCustom::featureCalc",
@@ -23,14 +32,17 @@
       "source": "customer_custom",
       "self_pct": 8.0,
       "cumulative_pct": 20.0,
-      "call_path": ["main", "CustomerCustom::featureCalc"]
+      "call_path": [
+        "main",
+        "CustomerCustom::featureCalc"
+      ]
     }
   ],
   "topdown": {
-    "frontend_bound": 0.25,
-    "backend_bound": 0.40,
-    "bad_speculation": 0.10,
-    "retiring": 0.25
+    "frontend_bound": 25.0,
+    "backend_bound": 40.0,
+    "bad_speculation": 10.0,
+    "retiring": 25.0
   },
   "memory": {
     "bandwidth_gbps": 45.2,

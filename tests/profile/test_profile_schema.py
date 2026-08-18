@@ -45,19 +45,20 @@ def test_hotspot_function_open_source() -> None:
     assert hs.source == "open_source"
 
 
-def test_topdown_l1_sums_approximately_to_one() -> None:
-    td = TopdownL1(frontend_bound=0.25, backend_bound=0.40, bad_speculation=0.10, retiring=0.25)
+def test_topdown_l1_sums_approximately_to_one_hundred() -> None:
+    # TopdownL1 fields are percentages (0-100) summing to ~100 (#46).
+    td = TopdownL1(frontend_bound=25.0, backend_bound=40.0, bad_speculation=10.0, retiring=25.0)
     total = td.frontend_bound + td.backend_bound + td.bad_speculation + td.retiring
-    assert abs(total - 1.0) < 0.01
+    assert abs(total - 100.0) < 0.01
 
 
 def test_topdown_l2_nested() -> None:
     td_l2 = TopdownL2(
-        frontend_bound=TopdownL2Frontend(fetch_latency=0.15, branch_detect=0.05),
-        backend_bound=TopdownL2Backend(memory_bound=0.30, core_bound=0.10),
+        frontend_bound=TopdownL2Frontend(fetch_latency=15.0, branch_detect=5.0),
+        backend_bound=TopdownL2Backend(memory_bound=30.0, core_bound=10.0),
     )
     assert td_l2.frontend_bound is not None
-    assert td_l2.frontend_bound.fetch_latency == 0.15
+    assert td_l2.frontend_bound.fetch_latency == 15.0
 
 
 def test_full_profile_serialization() -> None:
@@ -78,7 +79,7 @@ def test_full_profile_serialization() -> None:
             )
         ],
         topdown=TopdownL1(
-            frontend_bound=0.25, backend_bound=0.40, bad_speculation=0.10, retiring=0.25
+            frontend_bound=25.0, backend_bound=40.0, bad_speculation=10.0, retiring=25.0
         ),
         memory=MemoryProfile(bandwidth_gbps=45.2, l3_miss_rate=0.08),
         business_logic="High-concurrency RPC service",

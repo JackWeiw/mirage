@@ -144,13 +144,13 @@ def _get_synth(instruction: dict[str, Any]) -> dict[str, Any]:
 
 
 def _make_collect_stub(
-    base_backend: float = 55.0,
+    base_backend: float = 50.0,
     base_retiring: float = 10.0,
     frontend_val: float = 10.0,
     bad_spec_val: float = 5.0,
     wsm_slope: float = 0.1,
     iter_slope: float = 0.02,
-    mr_slope: float = 10.0,
+    mr_slope: float = 5.0,
     cr_slope: float = 5.0,
     tc_slope: float = 0.0,
     qps_slope: float = 0.0,
@@ -161,6 +161,15 @@ def _make_collect_stub(
     retiring       = base_retiring + iter*<slope> + compute_ratio*<slope>
     frontend_bound = frontend_val  + (thread_count-4)*tc_slope
     bad_speculation= bad_spec_val  + (100-qps)*qps_slope  (higher qps -> lower)
+
+    Scenes are tuned to ABSOLUTE percentage-point diff (comparator emits w - c
+    pp, threshold 10pp). Default initial backend = 50 + 64*0.1 + 0.1*5 = 56.9,
+    a -15.1pp gap vs customer 72 -> out of the 10pp band -> the loop iterates
+    (priority >= 2 -> structural tier when an agent is present; runtime-tier-only
+    when degraded). mr_slope=5 means runtime memory_ratio alone can't close a -15pp
+    gap (max mr=1.0 -> 61.4, still -10.6pp out) -> degraded runs exhaust the
+    runtime tier instead of falsely converging. The structural wsm knob CAN
+    close it (wsm 64->160 -> backend 66.5, within band).
     """
 
     def collect(binary: str, instruction: dict[str, Any]) -> Profile | RunFailure:
@@ -202,10 +211,11 @@ class TestConvergePath:
         seed = _seed_instruction()
         sens = _sensitivity()
 
-        # Workload starts far from target.
-        # backend_bound  = 55 + 64*0.1 + 0.1*10 = 55 + 6.4 + 1 = 62.4
-        # retiring       = 10 + 100*0.02 + 0.1*5 = 10 + 2 + 0.5 = 12.5
-        # Both well outside 10% threshold -> priority >= 2 -> structural tier.
+        # Workload starts out of the 10pp band (customer backend=72, band
+        # [62, 82]); the structural wsm knob closes the gap in one round.
+        # backend_bound  = 50 + 64*0.1 + 0.1*5 = 56.9  (gap -15.1pp, OUT)
+        # retiring       = 10 + 100*0.02 + 0.1*5 = 12.5 (gap -0.5pp, IN)
+        # backend -15.1pp -> priority >= 2 (>=10, <20) -> structural tier.
 
         call_count = 0
 
@@ -218,20 +228,11 @@ class TestConvergePath:
             nonlocal call_count
             call_count += 1
             # First call: emit structural adjustments that close the gap.
-            # working_set_mb 64 -> 192: backend_bound += (192-64)*0.1 = 12.8
-            # iterations 100 -> 250: retiring += (250-100)*0.02 = 3.0
-            # After: backend_bound ~ 75.2, retiring ~ 15.5
-            # Wait, let me recalculate with the adjusted instruction...
-            # The collect stub uses the NEW instruction after apply_adjustments
-            # + rebuild.  So backend_bound = 55 + 192*0.1 + 0.1*10 = 75.2,
-            # retiring = 10 + 250*0.02 + 0.1*5 = 15.5.
-            # diff_pct backend = (75.2-72)/72*100 = +4.44% (within 10%).
-            # diff_pct retiring = (15.5-13)/13*100 = +19.2% (NOT within 10%).
-            # So NOT converged after iter 0.  Need a better adjustment.
-            # Let me use iterations 100->150: retiring = 10+150*0.02+0.5 = 13.5
-            # diff_pct = (13.5-13)/13*100 = +3.85% (within 10%).
-            # And working_set_mb 64->160: backend = 55+160*0.1+1 = 72.0
-            # diff_pct = 0%.  Perfect.
+            # After apply (wsm 64->160; iterations rejected by the gate because
+            # retiring is already within threshold), the rebuilt collect is:
+            #   backend_bound = 50 + 160*0.1 + 0.1*5 = 66.5  (gap -5.5pp, IN)
+            #   retiring      = 10 + 100*0.02 + 0.1*5 = 12.5 (gap -0.5pp, IN)
+            # All L1 within 10pp -> converged at iter 1.
             if call_count == 1:
                 return instr, [
                     {
@@ -501,21 +502,20 @@ class TestOscillationPath:
         seed = _seed_instruction()
         sens = _sensitivity()
 
-        # Use a high slope so the first adjustment overshoots, causing the
-        # controller to reverse the knob in the next iteration.
-        # backend_bound = 55 + memory_ratio * 100
-        #   mr=0.1 -> backend=65 (diff -9.7%, within threshold -- won't work)
-        # Use base_backend=50:
-        #   mr=0.1 -> backend=60 (diff -16.7%, priority 3 -> structural)
-        # Hmm, priority 3 goes to structural tier (agent).  Need degraded
-        # mode or mock agent that returns runtime knobs...
-        # Alternative: use degraded mode (agent=None) with oscillation_window=1.
-
+        # Absolute-pp oscillation scene (customer backend 72, band [62, 82]).
+        # With slope 115, both endpoints of the first runtime step stay OUT of
+        # the 10pp band, so the controller reverses the knob next iter:
+        #   mr=0.1 -> backend 50+11.5 = 61.5 (gap -10.5pp, OUT low -> want up)
+        #   mr=0.3 -> backend 50+34.5 = 84.5 (gap +12.5pp, OUT high -> reverse)
+        # oscillation_window=1 then skip-blocks the reversal -> runtime tier
+        # exhausted (oscillation detection would also qualify under the same
+        # stop set). Under relative diff this scene converged at iter 1 (mr=0.3
+        # -> 80, +11.1% -> out -> reversed -> oscillation); absolute pp widens
+        # the band so we steepen the slope to keep the overshoot outside it.
         def collect_oscillation(binary: str, instruction: dict[str, Any]) -> Profile | RunFailure:
             cfg = instruction.get("config", {})
             mr = cfg.get("memory_ratio", 0.1)
-            # Steep slope: each 0.2 step moves backend by 20.
-            backend = 50.0 + mr * 100.0
+            backend = 50.0 + mr * 115.0
             return Profile(
                 metadata=ProfileMetadata(customer="workload", date="2026-08-17"),
                 topdown=TopdownL1(

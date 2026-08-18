@@ -14,10 +14,11 @@ def test_parse_json_topdown_l1() -> None:
     parser = TopdownParser()
     result = parser.parse_json(DATA_DIR / "sample_topdown.json")
     assert result.topdown is not None
-    assert result.topdown.frontend_bound == 0.25
-    assert result.topdown.backend_bound == 0.40
-    assert result.topdown.bad_speculation == 0.10
-    assert result.topdown.retiring == 0.25
+    # Topdown L1 values are PERCENTAGES (0-100), matching parse_text.
+    assert result.topdown.frontend_bound == 25.0
+    assert result.topdown.backend_bound == 40.0
+    assert result.topdown.bad_speculation == 10.0
+    assert result.topdown.retiring == 25.0
 
 
 def test_parse_json_topdown_l2() -> None:
@@ -25,9 +26,9 @@ def test_parse_json_topdown_l2() -> None:
     result = parser.parse_json(DATA_DIR / "sample_topdown.json")
     assert result.topdown_l2 is not None
     assert result.topdown_l2.frontend_bound is not None
-    assert result.topdown_l2.frontend_bound.fetch_latency == 0.15
+    assert result.topdown_l2.frontend_bound.fetch_latency == 15.0
     assert result.topdown_l2.backend_bound is not None
-    assert result.topdown_l2.backend_bound.memory_bound == 0.30
+    assert result.topdown_l2.backend_bound.memory_bound == 30.0
 
 
 def test_parse_json_memory() -> None:
@@ -42,8 +43,8 @@ def test_parse_csv_topdown_l1() -> None:
     parser = TopdownParser()
     result = parser.parse_csv(DATA_DIR / "sample_topdown.csv")
     assert result.topdown is not None
-    assert result.topdown.frontend_bound == 0.25
-    assert result.topdown.backend_bound == 0.40
+    assert result.topdown.frontend_bound == 25.0
+    assert result.topdown.backend_bound == 40.0
 
 
 def test_parse_csv_memory() -> None:
