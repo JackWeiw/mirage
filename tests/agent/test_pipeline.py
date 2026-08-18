@@ -57,7 +57,7 @@ def test_pipeline_ingest_only() -> None:
 
     assert len(profile.hotspots) > 0
     assert profile.topdown is not None
-    assert profile.topdown.backend_bound == 0.55
+    assert profile.topdown.backend_bound == 55.0
 
 
 def test_pipeline_local_only_with_manual_instruction() -> None:
@@ -96,10 +96,10 @@ def test_pipeline_local_only_with_manual_instruction() -> None:
     customer_profile = Profile(
         metadata=ProfileMetadata(customer="test", date="2026-07-27"),
         topdown=TopdownL1(
-            frontend_bound=0.25,
-            backend_bound=0.40,
-            bad_speculation=0.10,
-            retiring=0.25,
+            frontend_bound=25.0,
+            backend_bound=40.0,
+            bad_speculation=10.0,
+            retiring=25.0,
         ),
     )
 
@@ -133,7 +133,7 @@ def test_pipeline_ingest_customer_data() -> None:
     assert profile.metadata.neoverse_core == "N2"
     assert len(profile.hotspots) > 0
     assert profile.topdown is not None
-    assert profile.topdown.backend_bound == 0.55
+    assert profile.topdown.backend_bound == 55.0
     assert profile.topdown_l2 is not None
     assert profile.memory is not None
     assert profile.memory.bandwidth_gbps == 48.5
@@ -164,10 +164,10 @@ def test_pipeline_compare_results() -> None:
     workload_profile = Profile(
         metadata=ProfileMetadata(customer="workload", date="2026-07-27"),
         topdown=TopdownL1(
-            frontend_bound=0.19,
-            backend_bound=0.54,
-            bad_speculation=0.07,
-            retiring=0.20,
+            frontend_bound=19.0,
+            backend_bound=54.0,
+            bad_speculation=7.0,
+            retiring=20.0,
         ),
         memory=MemoryProfile(bandwidth_gbps=48.0),
     )

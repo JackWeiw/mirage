@@ -13,7 +13,7 @@ def test_save_and_load_profile() -> None:
     profile = Profile(
         metadata=ProfileMetadata(customer="acme", date="2026-07-27"),
         topdown=TopdownL1(
-            frontend_bound=0.25, backend_bound=0.40, bad_speculation=0.10, retiring=0.25
+            frontend_bound=25.0, backend_bound=40.0, bad_speculation=10.0, retiring=25.0
         ),
     )
     path = store.save(profile, name="test_profile")
@@ -21,7 +21,7 @@ def test_save_and_load_profile() -> None:
     loaded = store.load(name="test_profile")
     assert loaded.metadata.customer == "acme"
     assert loaded.topdown is not None
-    assert loaded.topdown.frontend_bound == 0.25
+    assert loaded.topdown.frontend_bound == 25.0
 
 
 def test_list_profiles() -> None:
