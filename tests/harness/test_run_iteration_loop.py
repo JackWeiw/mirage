@@ -165,8 +165,8 @@ def _make_collect_stub(
     Scenes are tuned to ABSOLUTE percentage-point diff (comparator emits w - c
     pp, threshold 10pp). Default initial backend = 50 + 64*0.1 + 0.1*5 = 56.9,
     a -15.1pp gap vs customer 72 -> out of the 10pp band -> the loop iterates
-    (priority 2 structural when an agent is present; runtime-tier-only when
-    degraded). mr_slope=5 means runtime memory_ratio alone can't close a -15pp
+    (priority >= 2 -> structural tier when an agent is present; runtime-tier-only
+    when degraded). mr_slope=5 means runtime memory_ratio alone can't close a -15pp
     gap (max mr=1.0 -> 61.4, still -10.6pp out) -> degraded runs exhaust the
     runtime tier instead of falsely converging. The structural wsm knob CAN
     close it (wsm 64->160 -> backend 66.5, within band).
@@ -215,7 +215,7 @@ class TestConvergePath:
         # [62, 82]); the structural wsm knob closes the gap in one round.
         # backend_bound  = 50 + 64*0.1 + 0.1*5 = 56.9  (gap -15.1pp, OUT)
         # retiring       = 10 + 100*0.02 + 0.1*5 = 12.5 (gap -0.5pp, IN)
-        # backend -15.1pp -> priority 2 (>=10, <20) -> structural tier.
+        # backend -15.1pp -> priority >= 2 (>=10, <20) -> structural tier.
 
         call_count = 0
 
