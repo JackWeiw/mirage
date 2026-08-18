@@ -62,6 +62,10 @@ module = "anthropic.*"
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
+module = "openai.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
 module = "structlog.*"
 ignore_missing_imports = true
 
