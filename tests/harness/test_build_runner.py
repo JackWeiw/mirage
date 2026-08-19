@@ -131,3 +131,22 @@ def test_build_sets_duration_seconds_on_failure(tmp_path: pathlib.Path) -> None:
     assert result.success is False
     assert isinstance(result.duration_seconds, float)
     assert result.duration_seconds >= 0.0
+
+
+def test_build_sets_duration_seconds_on_nonzero_rc(
+    tmp_path: pathlib.Path, monkeypatch: Any
+) -> None:
+    """A build that fails mid-step (cmake returns non-zero) still populates
+    duration_seconds. Pins the non-zero-rc return path, distinct from the
+    cmake-not-found and success paths."""
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="boom")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    runner = BuildRunner()
+    result = runner.build(tmp_path)
+    assert result.success is False
+    assert isinstance(result.duration_seconds, float)
+    assert result.duration_seconds >= 0.0

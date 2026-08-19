@@ -90,10 +90,10 @@ class BuildRunner:
             project_dir: Path to the project directory containing CMakeLists.txt.
 
         Returns:
-            BuildResult with success status, output, error, and binary path if successful.
-            duration_seconds is the wall-clock build time (cmake + make),
-        populated on every return path so it is honest telemetry rather than
-        a dead 0.0 default.
+            BuildResult with success status, output, error, and binary path if
+            successful. duration_seconds is the wall-clock build time (cmake +
+            make), populated on every return path so it is honest telemetry
+            rather than a dead 0.0 default.
         """
         start = time.monotonic()
         build_dir = project_dir / self.build_dir_suffix
