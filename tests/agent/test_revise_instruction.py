@@ -4,7 +4,12 @@ from typing import Any
 
 import pytest
 
-from agent.agent_core import PROMPTS_DIR, AgentCore, LLMResponseError
+from agent.agent_core import (
+    PROMPTS_DIR,
+    AgentCore,
+    LLMResponseError,
+    _serialize_recent_history,
+)
 
 
 def test_revise_instruction_prompt_exists_and_has_placeholders() -> None:
@@ -17,6 +22,54 @@ def test_revise_instruction_prompt_exists_and_has_placeholders() -> None:
     assert "proven direction" in text.lower()
     assert "revised_instruction" in text
     assert "adjustments" in text
+
+
+class _FakeRecord:
+    """Duck-typed IterationRecord for _serialize_recent_history tests."""
+
+    def __init__(
+        self,
+        adjustments: list[dict[str, Any]] | None = None,
+        observed_effects: dict[str, float] | None = None,
+        score: float | None = None,
+        build_failed: bool = False,
+        build_stderr: str = "",
+    ) -> None:
+        self.adjustments = adjustments or []
+        self.applied_moves: list[dict[str, Any]] = []
+        self.observed_effects = observed_effects or {}
+        self.score = score
+        self.build_failed = build_failed
+        self.build_stderr = build_stderr
+
+
+class _FakeHistory:
+    def __init__(self, records: list[_FakeRecord]) -> None:
+        self.records = records
+
+
+def test_serialize_recent_history_surfaces_build_stderr() -> None:
+    # A build-failed record must carry its compiler stderr into the revise
+    # prompt so the LLM can self-correct a codegen compile error (#3b-fu1).
+    history = _FakeHistory(
+        records=[
+            _FakeRecord(adjustments=[{"knob": "working_set_mb"}], score=0.4),
+            _FakeRecord(
+                adjustments=[], score=None, build_failed=True, build_stderr="undeclared id 'bar'"
+            ),
+        ]
+    )
+    serialized = _serialize_recent_history(history)
+    assert "build_failed" in serialized
+    assert "build_stderr" in serialized
+    assert "undeclared id" in serialized
+
+
+def test_serialize_recent_history_omits_build_fields_when_no_failure() -> None:
+    history = _FakeHistory(records=[_FakeRecord(adjustments=[{"knob": "qps"}], score=0.5)])
+    serialized = _serialize_recent_history(history)
+    assert "build_failed" not in serialized
+    assert "build_stderr" not in serialized
 
 
 def _make_agent(recorded_response: dict[str, Any]) -> AgentCore:

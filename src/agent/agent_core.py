@@ -35,14 +35,21 @@ def _serialize_recent_history(history: Any) -> str:
     recs: list[dict[str, Any]] = []
     recent_records = getattr(history, "records", [])[-_RECENT_HISTORY_N:]
     for r in recent_records:
-        recs.append(
-            {
-                "adjustments": list(getattr(r, "adjustments", [])),
-                "applied_moves": list(getattr(r, "applied_moves", [])),
-                "observed_effects": dict(getattr(r, "observed_effects", {})),
-                "score": getattr(r, "score", None),
-            }
-        )
+        rec: dict[str, Any] = {
+            "adjustments": list(getattr(r, "adjustments", [])),
+            "applied_moves": list(getattr(r, "applied_moves", [])),
+            "observed_effects": dict(getattr(r, "observed_effects", {})),
+            "score": getattr(r, "score", None),
+        }
+        # Surface build failures so the LLM can self-correct a codegen
+        # compile error on the pending_build_fix path (#3b-fu1). Only
+        # populated when a build actually failed, to avoid clutter.
+        build_failed = bool(getattr(r, "build_failed", False))
+        build_stderr = str(getattr(r, "build_stderr", "") or "")
+        if build_failed or build_stderr:
+            rec["build_failed"] = build_failed
+            rec["build_stderr"] = build_stderr
+        recs.append(rec)
     return json.dumps(recs)
 
 
