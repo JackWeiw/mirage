@@ -512,6 +512,37 @@ class Pipeline:
             moves.append({"knob": knob, "tier": tier, "sign": sign})
         return moves
 
+    @staticmethod
+    def _attribute_observed_effects(
+        prev_record: IterationRecord,
+        last_report: dict[str, Any],
+        report: dict[str, Any],
+    ) -> None:
+        """Attribute observed metric deltas to the PREVIOUS record's adjustments.
+
+        Mutates prev_record.observed_effects in place. Single-adjustment
+        round -> per-knob attribution to that adjustment's expected_metric
+        (only if the metric is in the new report). Multi-adjustment (LLM
+        batch) -> overall deltas across every topdown L1 metric (no false
+        per-knob causality). Called from both the converged break-path and
+        the loop tail -- the single source of truth for attribution.
+        """
+        last_td = last_report.get("topdown_l1", {})
+        new_td = report.get("topdown_l1", {})
+        if len(prev_record.adjustments) == 1:
+            # Single-adjustment round: per-knob attribution.
+            metric = str(prev_record.adjustments[0].get("expected_metric", ""))
+            if metric and metric in new_td:
+                old_diff = last_td.get(metric, {}).get("diff_pct", 0.0)
+                new_diff = new_td.get(metric, {}).get("diff_pct", 0.0)
+                prev_record.observed_effects[metric] = new_diff - old_diff
+        elif len(prev_record.adjustments) > 1:
+            # Multi-adjustment (LLM batch): overall deltas only.
+            for metric in new_td:
+                old_diff = last_td.get(metric, {}).get("diff_pct", 0.0)
+                new_diff = new_td.get(metric, {}).get("diff_pct", 0.0)
+                prev_record.observed_effects[metric] = new_diff - old_diff
+
     def _loop_result(self, history: IterationHistory, stop_reason: str) -> PipelineResult:
         """Persist history to disk and build the PipelineResult."""
         history_path = history.save(self.output_base_dir / "history.json")
@@ -706,29 +737,7 @@ class Pipeline:
                 history.add_record(record)
                 # Run attribution for the previous record before breaking.
                 if prev_record is not None and last_report is not None:
-                    if len(prev_record.adjustments) == 1:
-                        metric = str(prev_record.adjustments[0].get("expected_metric", ""))
-                        if metric and metric in report.get("topdown_l1", {}):
-                            old_diff = (
-                                last_report.get("topdown_l1", {})
-                                .get(metric, {})
-                                .get("diff_pct", 0.0)
-                            )
-                            new_diff = (
-                                report.get("topdown_l1", {}).get(metric, {}).get("diff_pct", 0.0)
-                            )
-                            prev_record.observed_effects[metric] = new_diff - old_diff
-                    elif len(prev_record.adjustments) > 1:
-                        for metric in report.get("topdown_l1", {}):
-                            old_diff = (
-                                last_report.get("topdown_l1", {})
-                                .get(metric, {})
-                                .get("diff_pct", 0.0)
-                            )
-                            new_diff = (
-                                report.get("topdown_l1", {}).get(metric, {}).get("diff_pct", 0.0)
-                            )
-                            prev_record.observed_effects[metric] = new_diff - old_diff
+                    self._attribute_observed_effects(prev_record, last_report, report)
                 stop_reason = "converged"
                 break
 
@@ -849,23 +858,7 @@ class Pipeline:
 
             # ---- observed_effects attribution (for the PREVIOUS record) ----
             if prev_record is not None and last_report is not None:
-                if len(prev_record.adjustments) == 1:
-                    # Single-adjustment round: per-knob attribution.
-                    metric = str(prev_record.adjustments[0].get("expected_metric", ""))
-                    if metric and metric in report.get("topdown_l1", {}):
-                        old_diff = (
-                            last_report.get("topdown_l1", {}).get(metric, {}).get("diff_pct", 0.0)
-                        )
-                        new_diff = report.get("topdown_l1", {}).get(metric, {}).get("diff_pct", 0.0)
-                        prev_record.observed_effects[metric] = new_diff - old_diff
-                elif len(prev_record.adjustments) > 1:
-                    # Multi-adjustment (LLM batch): overall deltas only.
-                    for metric in report.get("topdown_l1", {}):
-                        old_diff = (
-                            last_report.get("topdown_l1", {}).get(metric, {}).get("diff_pct", 0.0)
-                        )
-                        new_diff = report.get("topdown_l1", {}).get(metric, {}).get("diff_pct", 0.0)
-                        prev_record.observed_effects[metric] = new_diff - old_diff
+                self._attribute_observed_effects(prev_record, last_report, report)
             prev_record = record
             last_report = report  # capture for next iteration's attribution
 
