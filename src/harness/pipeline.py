@@ -634,6 +634,12 @@ class Pipeline:
 
         for i in range(max_iter):
             agent_avail_now = self.agent is not None and self.agent.is_available()
+            # Per-iteration reset of the apply_revised flag. It is set only in
+            # the pending_build_fix branch (when the agent is available) and
+            # consumed in the apply section below; resetting here guarantees a
+            # stale True can never leak into a later iteration even if the
+            # candidate-gen branch that assigns _revised is skipped.
+            apply_revised = False
             # ---- Collect phase ----
             if pending_build_fix:
                 # The last structural revision did not compile.  Don't run

@@ -840,10 +840,12 @@ class TestBuildFailureSelfCorrectionPath:
         sens = _sensitivity()
 
         build_count = 0
+        build_instructions: list[dict[str, Any]] = []
 
         def build_fail_then_recover(instr: dict[str, Any]) -> BuildResult:
             nonlocal build_count
             build_count += 1
+            build_instructions.append(instr)
             if build_count == 2:
                 # first structural rebuild fails with a real compiler error
                 return BuildResult(
@@ -921,6 +923,12 @@ class TestBuildFailureSelfCorrectionPath:
         assert failed and "undeclared identifier" in failed[0].build_stderr
         # The revised instruction was applied (the loop rebuilt from it).
         assert revise_count >= 2
+        # The 3rd build (the recovery rebuild) must have received the LLM's
+        # *revised instruction* -- the one tagged with the code-fix marker --
+        # proving the apply_revised path rebuilt from _revised, not from a
+        # knob-adjusted copy of the prior instruction.
+        assert len(build_instructions) >= 3
+        assert "_llm_code_fix" in build_instructions[2]
 
 
 # ---------------------------------------------------------------------------
