@@ -3,6 +3,7 @@
 import pathlib
 import re
 import subprocess
+import time
 
 from models.results import BuildResult
 from observability.logging import get_logger
@@ -89,8 +90,12 @@ class BuildRunner:
             project_dir: Path to the project directory containing CMakeLists.txt.
 
         Returns:
-            BuildResult with success status, output, error, and binary path if successful.
+            BuildResult with success status, output, error, and binary path if
+            successful. duration_seconds is the wall-clock build time (cmake +
+            make), populated on every return path so it is honest telemetry
+            rather than a dead 0.0 default.
         """
+        start = time.monotonic()
         build_dir = project_dir / self.build_dir_suffix
         build_dir.mkdir(parents=True, exist_ok=True)
 
@@ -101,13 +106,24 @@ class BuildRunner:
         try:
             cmake_result = subprocess.run(cmake_cmd, capture_output=True, text=True, timeout=120)
         except subprocess.TimeoutExpired:
-            return BuildResult(success=False, stderr="cmake timed out after 120s")
+            return BuildResult(
+                success=False,
+                stderr="cmake timed out after 120s",
+                duration_seconds=time.monotonic() - start,
+            )
         except FileNotFoundError:
-            return BuildResult(success=False, stderr=f"cmake not found at {self.cmake_path}")
+            return BuildResult(
+                success=False,
+                stderr=f"cmake not found at {self.cmake_path}",
+                duration_seconds=time.monotonic() - start,
+            )
 
         if cmake_result.returncode != 0:
             return BuildResult(
-                success=False, stdout=cmake_result.stdout, stderr=cmake_result.stderr
+                success=False,
+                stdout=cmake_result.stdout,
+                stderr=cmake_result.stderr,
+                duration_seconds=time.monotonic() - start,
             )
 
         # Step 2: make compile
@@ -117,12 +133,25 @@ class BuildRunner:
         try:
             make_result = subprocess.run(make_cmd, capture_output=True, text=True, timeout=300)
         except subprocess.TimeoutExpired:
-            return BuildResult(success=False, stderr="make timed out after 300s")
+            return BuildResult(
+                success=False,
+                stderr="make timed out after 300s",
+                duration_seconds=time.monotonic() - start,
+            )
         except FileNotFoundError:
-            return BuildResult(success=False, stderr=f"make not found at {self.make_path}")
+            return BuildResult(
+                success=False,
+                stderr=f"make not found at {self.make_path}",
+                duration_seconds=time.monotonic() - start,
+            )
 
         if make_result.returncode != 0:
-            return BuildResult(success=False, stdout=make_result.stdout, stderr=make_result.stderr)
+            return BuildResult(
+                success=False,
+                stdout=make_result.stdout,
+                stderr=make_result.stderr,
+                duration_seconds=time.monotonic() - start,
+            )
 
         # Step 3: locate binary
         binary = _locate_binary(build_dir, project_dir)
@@ -132,4 +161,5 @@ class BuildRunner:
             stdout=make_result.stdout,
             stderr=make_result.stderr,
             binary_path=binary,
+            duration_seconds=time.monotonic() - start,
         )

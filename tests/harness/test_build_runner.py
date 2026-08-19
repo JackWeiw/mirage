@@ -1,7 +1,9 @@
 """Tests for BuildRunner."""
 
 import pathlib
+import subprocess
 import tempfile
+from typing import Any
 
 from harness.build_runner import BuildRunner, _locate_binary, _read_cmake_target
 
@@ -92,3 +94,59 @@ def test_locate_binary_returns_none_when_no_binary(tmp_path: pathlib.Path) -> No
     (build_dir / "Makefile").write_text("all:\n")
     (tmp_path / "CMakeLists.txt").write_text("project(x)\n")
     assert _locate_binary(build_dir, tmp_path) is None
+
+
+# -- BuildResult.duration_seconds: populated on every return path (#48) -----
+
+
+def test_build_sets_duration_seconds_on_success(tmp_path: pathlib.Path, monkeypatch: Any) -> None:
+    """A successful build populates duration_seconds with a real wall-clock
+    time instead of the dead 0.0 default."""
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    (tmp_path / "CMakeLists.txt").write_text(
+        "project(workload_sim)\nadd_executable(workload_sim main.cpp)\n"
+    )
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    (build_dir / "workload_sim").write_text("#!/bin/sh\n")  # fake binary
+
+    runner = BuildRunner()
+    result = runner.build(tmp_path)
+    assert result.success is True
+    assert result.binary_path is not None
+    assert pathlib.Path(result.binary_path).name == "workload_sim"
+    assert isinstance(result.duration_seconds, float)
+    assert result.duration_seconds >= 0.0
+
+
+def test_build_sets_duration_seconds_on_failure(tmp_path: pathlib.Path) -> None:
+    """A failed build (cmake not found) still populates duration_seconds."""
+    runner = BuildRunner(cmake_path="/nonexistent/cmake")
+    result = runner.build(tmp_path)
+    assert result.success is False
+    assert isinstance(result.duration_seconds, float)
+    assert result.duration_seconds >= 0.0
+
+
+def test_build_sets_duration_seconds_on_nonzero_rc(
+    tmp_path: pathlib.Path, monkeypatch: Any
+) -> None:
+    """A build that fails mid-step (cmake returns non-zero) still populates
+    duration_seconds. Pins the non-zero-rc return path, distinct from the
+    cmake-not-found and success paths."""
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="boom")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    runner = BuildRunner()
+    result = runner.build(tmp_path)
+    assert result.success is False
+    assert isinstance(result.duration_seconds, float)
+    assert result.duration_seconds >= 0.0
