@@ -33,7 +33,7 @@ from harness.metrics_collector import MetricsCollector
 from harness.run_config import RunConfig
 from ingestion.flamegraph_parser import FlamegraphParser
 from ingestion.topdown_parser import TopdownParser
-from models.results import PipelineResult, RunFailure
+from models.results import BuildResult, PipelineResult, RunFailure
 from observability.iteration_history import (
     IterationHistory,
     IterationRecord,
@@ -208,19 +208,31 @@ class Pipeline:
         self.telemetry.end_step("run_and_compare", success=True)
         return report
 
-    def build_workload(self, project_dir: pathlib.Path) -> str | None:
-        """Build the generated workload project."""
+    def build_workload_result(self, project_dir: pathlib.Path) -> BuildResult:
+        """Build the generated workload project, returning the full BuildResult.
+
+        Preserves compiler stdout/stderr so the loop's build-failure
+        self-correction path can surface the real error to the LLM (#3b-fu1).
+        """
         self.telemetry.start_step("building")
         result = self.build_runner.build(project_dir)
 
         if not result.success:
             logger.error("build_failed", error=result.stderr)
             self.telemetry.end_step("building", success=False, error=result.stderr)
-            return None
+        else:
+            logger.info("build_succeeded", binary=result.binary_path)
+            self.telemetry.end_step("building", success=True)
+        return result
 
-        logger.info("build_succeeded", binary=result.binary_path)
-        self.telemetry.end_step("building", success=True)
-        return result.binary_path
+    def build_workload(self, project_dir: pathlib.Path) -> str | None:
+        """Build the generated workload project (binary path, or None).
+
+        Thin wrapper over `build_workload_result` for Phase-1 callers that
+        only need the binary path. Loop callers should use
+        `build_workload_result` to keep compiler stderr.
+        """
+        return self.build_workload_result(project_dir).binary_path
 
     def run_workload(self, binary_path: str, run_config: RunConfig | None = None) -> dict[str, Any]:
         """Run the workload binary."""
@@ -425,8 +437,8 @@ class Pipeline:
     def _build_instruction(
         self,
         instruction: dict[str, Any],
-        build: Callable[[dict[str, Any]], str | None],
-    ) -> str | None:
+        build: Callable[[dict[str, Any]], BuildResult],
+    ) -> BuildResult:
         """Build the initial binary via the caller-supplied build callable."""
         return build(instruction)
 
@@ -518,7 +530,7 @@ class Pipeline:
         sensitivity: dict[str, dict[str, Any]] | None = None,
         max_iter: int = 10,
         collect: (Callable[[str, dict[str, Any]], Profile | RunFailure] | None) = None,
-        build: Callable[[dict[str, Any]], str | None] | None = None,
+        build: Callable[[dict[str, Any]], BuildResult] | None = None,
     ) -> PipelineResult:
         """Two-tier auto-iteration loop driver (spec 'Two-tier loop driver').
 
@@ -534,7 +546,7 @@ class Pipeline:
             sensitivity: Per-knob sensitivity table for the deterministic leg.
             max_iter: Maximum iterations.
             collect: Injectable collect(binary_path, instruction) -> Profile | RunFailure.
-            build: Injectable build(instruction) -> binary_path | None.
+            build: Injectable build(instruction) -> BuildResult (carries stderr).
 
         Returns:
             PipelineResult with best_iteration, stop_reason, degraded, history_path.
@@ -545,12 +557,12 @@ class Pipeline:
         # Resolve callables (defaults wrap the real Pipeline methods).
         if build is None:
 
-            def _default_build(instr: dict[str, Any]) -> str | None:
+            def _default_build(instr: dict[str, Any]) -> BuildResult:
                 pdir = self.output_base_dir / "generated_workload"
                 self.generator.generate(instr, pdir)
-                return self.build_workload(pdir)
+                return self.build_workload_result(pdir)
 
-            build_fn: Callable[[dict[str, Any]], str | None] = _default_build
+            build_fn: Callable[[dict[str, Any]], BuildResult] = _default_build
         else:
             build_fn = build
 
@@ -587,11 +599,20 @@ class Pipeline:
             )
 
         # --- Initial build (seed must compile; no recovery) ---
-        binary: str | None = self._build_instruction(instruction, build_fn)
-        if binary is None:
+        seed_build = self._build_instruction(instruction, build_fn)
+        if not seed_build.success:
             return PipelineResult(
                 success=False,
-                error="seed_build_failed",
+                error=f"seed_build_failed: {seed_build.stderr}".rstrip(": "),
+                stop_reason="seed_build_failed",
+            )
+        binary: str | None = seed_build.binary_path
+        if binary is None:
+            # success but no binary path -- malformed BuildResult; treat as
+            # a seed build failure (defensive, should not happen).
+            return PipelineResult(
+                success=False,
+                error="seed_build_failed: no binary path",
                 stop_reason="seed_build_failed",
             )
 
@@ -601,11 +622,24 @@ class Pipeline:
         run_fail_streak = 0
         build_fail_streak = 0
         pending_build_fix = False
+        # When True, this iteration must apply the LLM's *revised instruction*
+        # (a code-level fix) and rebuild from it, instead of gating/applying
+        # knob adjustments (knobs cannot fix a codegen compile error). Only
+        # the LLM can self-correct a build failure; set when entering the
+        # pending_build_fix branch with an agent available.
+        apply_revised = False
         last_report: dict[str, Any] | None = None
         prev_record: IterationRecord | None = None
         stop_reason = "max_iter"  # default if the for loop completes without break
 
         for i in range(max_iter):
+            agent_avail_now = self.agent is not None and self.agent.is_available()
+            # Per-iteration reset of the apply_revised flag. It is set only in
+            # the pending_build_fix branch (when the agent is available) and
+            # consumed in the apply section below; resetting here guarantees a
+            # stale True can never leak into a later iteration even if the
+            # candidate-gen branch that assigns _revised is skipped.
+            apply_revised = False
             # ---- Collect phase ----
             if pending_build_fix:
                 # The last structural revision did not compile.  Don't run
@@ -613,8 +647,31 @@ class Pipeline:
                 # report, with the compiler stderr now in history so the
                 # LLM can self-correct.
                 report = last_report
-                pending_build_fix = False
+                if agent_avail_now:
+                    # Ask the LLM for a *revised instruction* (code fix) and
+                    # rebuild from it this iteration (see apply section).
+                    apply_revised = True
+                    pending_build_fix = False
+                else:
+                    # Agent went away mid-recovery: runtime knobs cannot fix a
+                    # codegen build failure. Keep skipping the dead binary and
+                    # let the build-failure streak terminate.
+                    history.add_record(
+                        IterationRecord(
+                            iteration=i,
+                            converged=False,
+                            build_failed=True,
+                        )
+                    )
+                    build_fail_streak += 1
+                    if build_fail_streak >= cmp_cfg.build_failure_stop:
+                        stop_reason = "build_failure_streak"
+                        break
+                    continue
             else:
+                # binary is set by the initial build and only replaced after
+                # a successful rebuild; it is never None at a collect site.
+                assert binary is not None
                 collect_result = collect_fn(binary, instruction)
                 if isinstance(collect_result, RunFailure):
                     run_fail_streak += 1
@@ -678,8 +735,13 @@ class Pipeline:
             tier = "runtime" if priority == 1 else "structural"
 
             # ---- Candidate generation ----
-            agent_avail_now = self.agent is not None and self.agent.is_available()
+            # agent_avail_now computed at the top of the loop iter.
             runtime_candidates_empty = False
+            # _revised: the LLM's code-level instruction rewrite. Only the
+            # structural+agent branch assigns it; on the pending_build_fix
+            # path we apply it (rebuild) instead of knob adjustments.
+            _revised: dict[str, Any] | None = None
+            cand: list[dict[str, Any]]
 
             if priority == 1:
                 # Runtime tier: deterministic fast path.
@@ -712,56 +774,76 @@ class Pipeline:
                 )
                 runtime_candidates_empty = len(cand) == 0
 
-            # ---- Gate ----
-            accepted, rejected = validate_adjustments(
-                cand,
-                instruction,
-                report,
-                sens,
-                tier,
-                topdown_threshold_pct=cmp_cfg.topdown_threshold_pct,
-            )
-            if rejected:
-                logger.info(
-                    "adjustments_rejected",
-                    iteration=i,
-                    count=len(rejected),
-                    reasons=[r.get("reason") for r in rejected],
-                )
-
-            # ---- Record + apply ----
-            applied = self._applied_moves(accepted, instruction, tier) if accepted else []
-            record = self._make_record(i, report, priority, accepted, applied)
+            # ---- Gate + apply ----
             build_failed_this_iter = False
-
-            if accepted:
-                # BUG-FIX #1: reassign -- apply_adjustments returns a NEW dict.
-                instruction = apply_adjustments(instruction, accepted)
-                if tier == "structural":
-                    new_binary = self._build_instruction(instruction, build_fn)
-                    if new_binary is None:
-                        build_fail_streak += 1
-                        record.build_failed = True
-                        record.build_stderr = "build_returned_none"  # placeholder
-                        build_failed_this_iter = True
-                        pending_build_fix = True
-                    else:
-                        binary = new_binary
-                        build_fail_streak = 0
+            if apply_revised and _revised is not None:
+                # pending_build_fix path: the LLM revised the instruction to
+                # fix a compile error. Apply the revised instruction directly
+                # -- the gate validates *knob* direction/scope, which does not
+                # apply to a code-level rewrite -- and rebuild from it.
+                apply_revised = False
+                record = self._make_record(i, report, priority, [], [])
+                instruction = _revised
+                new_res = self._build_instruction(instruction, build_fn)
+                if not new_res.success:
+                    build_fail_streak += 1
+                    record.build_failed = True
+                    record.build_stderr = new_res.stderr
+                    build_failed_this_iter = True
+                    pending_build_fix = True
                 else:
-                    # Runtime tier: atomic rewrite of project config.json.
-                    # Best-effort -- the test stub may not create a real
-                    # project directory.
-                    project_dir = pathlib.Path(binary).parent
-                    config_path = project_dir / "config.json"
-                    if project_dir.is_dir():
-                        try:
-                            write_config_json_atomic(
-                                config_path,
-                                instruction.get("config", {}),
-                            )
-                        except OSError as exc:
-                            logger.warning("config_write_failed", error=str(exc))
+                    binary = new_res.binary_path
+                    build_fail_streak = 0
+            else:
+                accepted, rejected = validate_adjustments(
+                    cand,
+                    instruction,
+                    report,
+                    sens,
+                    tier,
+                    topdown_threshold_pct=cmp_cfg.topdown_threshold_pct,
+                )
+                if rejected:
+                    logger.info(
+                        "adjustments_rejected",
+                        iteration=i,
+                        count=len(rejected),
+                        reasons=[r.get("reason") for r in rejected],
+                    )
+
+                # ---- Record + apply ----
+                applied = self._applied_moves(accepted, instruction, tier) if accepted else []
+                record = self._make_record(i, report, priority, accepted, applied)
+
+                if accepted:
+                    # BUG-FIX #1: reassign -- apply_adjustments returns a NEW dict.
+                    instruction = apply_adjustments(instruction, accepted)
+                    if tier == "structural":
+                        new_res = self._build_instruction(instruction, build_fn)
+                        if not new_res.success:
+                            build_fail_streak += 1
+                            record.build_failed = True
+                            record.build_stderr = new_res.stderr
+                            build_failed_this_iter = True
+                            pending_build_fix = True
+                        else:
+                            binary = new_res.binary_path
+                            build_fail_streak = 0
+                    else:
+                        # Runtime tier: atomic rewrite of project config.json.
+                        # Best-effort -- the test stub may not create a real
+                        # project directory.
+                        assert binary is not None  # set after a successful build
+                        project_dir = pathlib.Path(binary).parent
+                        config_path = project_dir / "config.json"
+                        if project_dir.is_dir():
+                            try:
+                                write_config_json_atomic(
+                                    config_path,
+                                    instruction.get("config", {}),
+                                )
+                            except OSError as exc:
+                                logger.warning("config_write_failed", error=str(exc))
 
             history.add_record(record)
 

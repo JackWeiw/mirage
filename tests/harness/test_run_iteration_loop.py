@@ -13,7 +13,7 @@ from typing import Any, cast
 
 from config.framework_config import FrameworkConfig
 from harness.pipeline import Pipeline
-from models.results import PipelineResult, RunFailure
+from models.results import BuildResult, PipelineResult, RunFailure
 from profile.profile_schema import (
     Profile,
     ProfileMetadata,
@@ -130,9 +130,9 @@ def _make_config(tmp_path: pathlib.Path, **overrides: Any) -> FrameworkConfig:
     return cfg
 
 
-def _fake_build(instruction: dict[str, Any]) -> str | None:
+def _fake_build(instruction: dict[str, Any]) -> BuildResult:
     """Default build stub that always succeeds."""
-    return "/fake/binary"
+    return BuildResult(success=True, binary_path="/fake/binary")
 
 
 def _get_synth(instruction: dict[str, Any]) -> dict[str, Any]:
@@ -423,14 +423,14 @@ class TestEscalatePath:
 
         build_calls: list[dict[str, Any]] = []
 
-        def tracking_build(instr: dict[str, Any]) -> str | None:
+        def tracking_build(instr: dict[str, Any]) -> BuildResult:
             build_calls.append(
                 {
                     "wsm": _get_synth(instr).get("working_set_mb"),
                     "iters": _get_synth(instr).get("iterations"),
                 }
             )
-            return "/fake/binary"
+            return BuildResult(success=True, binary_path="/fake/binary")
 
         def mock_agent_revise(
             instr: dict[str, Any],
@@ -659,12 +659,14 @@ class TestBuildFailureStreakPath:
 
         def build_fail_after_seed(
             instr: dict[str, Any],
-        ) -> str | None:
+        ) -> BuildResult:
             nonlocal build_count
             build_count += 1
             if build_count == 1:
-                return "/fake/binary"  # initial build succeeds
-            return None  # subsequent structural builds fail
+                # initial build succeeds
+                return BuildResult(success=True, binary_path="/fake/binary")
+            # subsequent structural builds fail with a real compiler error
+            return BuildResult(success=False, stderr="error: use of undeclared identifier 'foo'")
 
         def mock_agent_revise(
             instr: dict[str, Any],
@@ -736,6 +738,197 @@ class TestBuildFailureStreakPath:
         )
         assert result.stop_reason == "build_failure_streak"
         assert result.success is False
+
+
+# ---------------------------------------------------------------------------
+# Path #7b: build-failure records the REAL compiler stderr
+# ---------------------------------------------------------------------------
+
+
+class TestBuildFailureStderrPath:
+    """A structural rebuild failure must record the real compiler stderr on
+    the failed IterationRecord (not the old "build_returned_none"
+    placeholder). Pins #3b-fu1 Part A."""
+
+    def test_build_failure_records_real_stderr(self, tmp_path: pathlib.Path) -> None:
+        customer = _customer_profile()
+        seed = _seed_instruction()
+        sens = _sensitivity()
+
+        build_count = 0
+
+        def build_fail_after_seed(instr: dict[str, Any]) -> BuildResult:
+            nonlocal build_count
+            build_count += 1
+            if build_count == 1:
+                return BuildResult(success=True, binary_path="/fake/binary")
+            return BuildResult(success=False, stderr="error: use of undeclared identifier 'foo'")
+
+        def mock_agent_revise(
+            instr: dict[str, Any],
+            report: dict[str, Any],
+            sensitivity: dict[str, dict[str, Any]],
+            history: Any,
+        ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+            current = _get_synth(instr).get("working_set_mb", 64)
+            return instr, [
+                {
+                    "stage": "s0",
+                    "knob": "working_set_mb",
+                    "from": current,
+                    "to": min(current + 64, 4096),
+                    "rationale": "close gap",
+                    "expected_metric": "backend_bound",
+                    "expected_direction": "up",
+                },
+            ]
+
+        class MockAgent:
+            def is_available(self) -> bool:
+                return True
+
+            def revise_instruction(
+                self,
+                instr: dict[str, Any],
+                report: dict[str, Any],
+                sensitivity: dict[str, dict[str, Any]],
+                history: Any,
+            ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+                return mock_agent_revise(instr, report, sensitivity, history)
+
+            def run_full_chain(self, profile_json: str) -> dict[str, Any]:
+                return seed
+
+        pipeline = Pipeline(
+            output_base_dir=tmp_path,
+            config=_make_config(tmp_path, build_failure_stop=2),
+            agent=MockAgent(),  # type: ignore[arg-type]
+        )
+        collect = _make_collect_stub()
+        result = pipeline.run_iteration_loop(
+            customer_profile=customer,
+            seed_instruction=seed,
+            sensitivity=sens,
+            max_iter=10,
+            collect=collect,
+            build=build_fail_after_seed,
+        )
+        # The failed record carries the REAL compiler stderr (not the old
+        # "build_returned_none" placeholder).
+        failed = [r for r in pipeline.history.records if r.build_failed]
+        assert failed, "expected at least one build_failed record"
+        assert "undeclared identifier" in failed[0].build_stderr
+        assert failed[0].build_stderr != "build_returned_none"
+        assert result.stop_reason == "build_failure_streak"
+
+
+# ---------------------------------------------------------------------------
+# Path #7b: build-failure self-correction via the LLM's revised instruction
+# ---------------------------------------------------------------------------
+
+
+class TestBuildFailureSelfCorrectionPath:
+    """A structural rebuild fails once; the LLM returns a *revised
+    instruction* (code-level fix); the loop rebuilds from it and recovers
+    (no false build_failure_streak). Pins #3b-fu1 Part C."""
+
+    def test_build_failure_self_corrects_via_revised_instruction(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        customer = _customer_profile()
+        seed = _seed_instruction()
+        sens = _sensitivity()
+
+        build_count = 0
+        build_instructions: list[dict[str, Any]] = []
+
+        def build_fail_then_recover(instr: dict[str, Any]) -> BuildResult:
+            nonlocal build_count
+            build_count += 1
+            build_instructions.append(instr)
+            if build_count == 2:
+                # first structural rebuild fails with a real compiler error
+                return BuildResult(
+                    success=False, stderr="error: use of undeclared identifier 'bar'"
+                )
+            # seed build + all later builds succeed
+            return BuildResult(success=True, binary_path="/fake/binary")
+
+        revise_count = 0
+
+        def mock_agent_revise(
+            instr: dict[str, Any],
+            report: dict[str, Any],
+            sensitivity: dict[str, dict[str, Any]],
+            history: Any,
+        ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+            nonlocal revise_count
+            revise_count += 1
+            # On the NORMAL structural path this knob adjustment drives a
+            # rebuild (which fails once, triggering pending_build_fix). On
+            # the pending_build_fix path the loop applies the *revised
+            # instruction* directly (a code-level fix), skipping the gate.
+            current = _get_synth(instr).get("working_set_mb", 64)
+            revised = {**instr, "_llm_code_fix": revise_count}
+            return revised, [
+                {
+                    "stage": "s0",
+                    "knob": "working_set_mb",
+                    "from": current,
+                    "to": min(current + 64, 4096),
+                    "rationale": "close backend gap",
+                    "expected_metric": "backend_bound",
+                    "expected_direction": "up",
+                },
+            ]
+
+        class MockAgent:
+            def is_available(self) -> bool:
+                return True
+
+            def revise_instruction(
+                self,
+                instr: dict[str, Any],
+                report: dict[str, Any],
+                sensitivity: dict[str, dict[str, Any]],
+                history: Any,
+            ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+                return mock_agent_revise(instr, report, sensitivity, history)
+
+            def run_full_chain(self, profile_json: str) -> dict[str, Any]:
+                return seed
+
+        pipeline = Pipeline(
+            output_base_dir=tmp_path,
+            config=_make_config(tmp_path, build_failure_stop=5),
+            agent=MockAgent(),  # type: ignore[arg-type]
+        )
+        # Non-converging collect so structural keeps firing past recovery.
+        collect = _make_collect_stub()
+        result = pipeline.run_iteration_loop(
+            customer_profile=customer,
+            seed_instruction=seed,
+            sensitivity=sens,
+            max_iter=4,
+            collect=collect,
+            build=build_fail_then_recover,
+        )
+        # Recovery happened: build was called at least 3x (seed + failed
+        # rebuild + successful rebuild from the revised instruction).
+        assert build_count >= 3
+        # The loop recovered and continued (no false build_failure_streak).
+        assert result.stop_reason != "build_failure_streak"
+        # The failed record carries the real compiler stderr.
+        failed = [r for r in pipeline.history.records if r.build_failed]
+        assert failed and "undeclared identifier" in failed[0].build_stderr
+        # The revised instruction was applied (the loop rebuilt from it).
+        assert revise_count >= 2
+        # The 3rd build (the recovery rebuild) must have received the LLM's
+        # *revised instruction* -- the one tagged with the code-fix marker --
+        # proving the apply_revised path rebuilt from _revised, not from a
+        # knob-adjusted copy of the prior instruction.
+        assert len(build_instructions) >= 3
+        assert "_llm_code_fix" in build_instructions[2]
 
 
 # ---------------------------------------------------------------------------
