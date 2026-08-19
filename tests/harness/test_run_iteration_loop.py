@@ -738,11 +738,88 @@ class TestBuildFailureStreakPath:
         )
         assert result.stop_reason == "build_failure_streak"
         assert result.success is False
+
+
+# ---------------------------------------------------------------------------
+# Path #7b: build-failure records the REAL compiler stderr
+# ---------------------------------------------------------------------------
+
+
+class TestBuildFailureStderrPath:
+    """A structural rebuild failure must record the real compiler stderr on
+    the failed IterationRecord (not the old "build_returned_none"
+    placeholder). Pins #3b-fu1 Part A."""
+
+    def test_build_failure_records_real_stderr(self, tmp_path: pathlib.Path) -> None:
+        customer = _customer_profile()
+        seed = _seed_instruction()
+        sens = _sensitivity()
+
+        build_count = 0
+
+        def build_fail_after_seed(instr: dict[str, Any]) -> BuildResult:
+            nonlocal build_count
+            build_count += 1
+            if build_count == 1:
+                return BuildResult(success=True, binary_path="/fake/binary")
+            return BuildResult(success=False, stderr="error: use of undeclared identifier 'foo'")
+
+        def mock_agent_revise(
+            instr: dict[str, Any],
+            report: dict[str, Any],
+            sensitivity: dict[str, dict[str, Any]],
+            history: Any,
+        ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+            current = _get_synth(instr).get("working_set_mb", 64)
+            return instr, [
+                {
+                    "stage": "s0",
+                    "knob": "working_set_mb",
+                    "from": current,
+                    "to": min(current + 64, 4096),
+                    "rationale": "close gap",
+                    "expected_metric": "backend_bound",
+                    "expected_direction": "up",
+                },
+            ]
+
+        class MockAgent:
+            def is_available(self) -> bool:
+                return True
+
+            def revise_instruction(
+                self,
+                instr: dict[str, Any],
+                report: dict[str, Any],
+                sensitivity: dict[str, dict[str, Any]],
+                history: Any,
+            ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+                return mock_agent_revise(instr, report, sensitivity, history)
+
+            def run_full_chain(self, profile_json: str) -> dict[str, Any]:
+                return seed
+
+        pipeline = Pipeline(
+            output_base_dir=tmp_path,
+            config=_make_config(tmp_path, build_failure_stop=2),
+            agent=MockAgent(),  # type: ignore[arg-type]
+        )
+        collect = _make_collect_stub()
+        result = pipeline.run_iteration_loop(
+            customer_profile=customer,
+            seed_instruction=seed,
+            sensitivity=sens,
+            max_iter=10,
+            collect=collect,
+            build=build_fail_after_seed,
+        )
         # The failed record carries the REAL compiler stderr (not the old
-        # "build_returned_none" placeholder). (#3b-fu1)
+        # "build_returned_none" placeholder).
         failed = [r for r in pipeline.history.records if r.build_failed]
         assert failed, "expected at least one build_failed record"
         assert "undeclared identifier" in failed[0].build_stderr
+        assert failed[0].build_stderr != "build_returned_none"
+        assert result.stop_reason == "build_failure_streak"
 
 
 # ---------------------------------------------------------------------------
