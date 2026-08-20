@@ -55,7 +55,10 @@ class Pipeline:
 
     Args:
         output_base_dir: Base directory for all generated output.
-        config: FrameworkConfig. If None, uses defaults.
+        config: FrameworkConfig. If None, loads via from_env (defaults +
+            MIRAGE_AGENT_* env overrides) so the gateway is configurable without
+            editing default_config.yaml. Pass FrameworkConfig.defaults() for an
+            env-free, offline test config.
         agent: AgentCore instance. If None, creates from config. Set to None explicitly for local-only mode.
     """
 
@@ -67,7 +70,7 @@ class Pipeline:
     ) -> None:
         self.output_base_dir = output_base_dir
         self.output_base_dir.mkdir(parents=True, exist_ok=True)
-        self.config = config or FrameworkConfig.defaults()
+        self.config = config or FrameworkConfig.from_env()
 
         self.profile_store = ProfileStore(base_dir=output_base_dir / "profiles")
         self.flamegraph_parser = FlamegraphParser()

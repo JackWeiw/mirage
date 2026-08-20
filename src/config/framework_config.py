@@ -1,9 +1,22 @@
 """Framework configuration model — loaded from YAML."""
 
+import os
 import pathlib
 
 import yaml
 from pydantic import BaseModel, Field, field_validator
+
+# Operator-facing LLM-gateway env vars (mirage-prefixed, provider-agnostic —
+# the same MIRAGE_AGENT_* set drives every entry point that uses from_env).
+# Declared at module scope (not as a class attr) so pydantic doesn't treat it as
+# a private attribute / field. ``base_url`` is the operator's gateway, never a
+# vendor's official host.
+_AGENT_ENV_MAP: dict[str, str] = {
+    "api_key": "MIRAGE_AGENT_API_KEY",
+    "base_url": "MIRAGE_AGENT_BASE_URL",
+    "provider": "MIRAGE_AGENT_PROVIDER",
+    "model": "MIRAGE_AGENT_MODEL",
+}
 
 
 class AgentConfig(BaseModel):
@@ -94,3 +107,40 @@ class FrameworkConfig(BaseModel):
         """Return default configuration."""
         defaults_path = pathlib.Path(__file__).parent / "default_config.yaml"
         return cls.from_yaml(defaults_path)
+
+    @classmethod
+    def from_env(cls, config_path: pathlib.Path | None = None) -> "FrameworkConfig":
+        """Load from a yaml (or ``defaults()``) then apply ``MIRAGE_AGENT_*`` env
+        overrides. Precedence: yaml < env.
+
+        This is the operator-facing loader for the LLM gateway — use it wherever a
+        FrameworkConfig should honor the deployment environment (Pipeline's default
+        config, example drivers). ``defaults()`` deliberately stays env-free so
+        tests get deterministic offline configs.
+
+        Env vars (all optional; ``MIRAGE_AGENT_API_KEY`` is what flips the agent
+        online — ``AgentCore`` builds a client iff ``api_key is not None``):
+          MIRAGE_AGENT_API_KEY   -> agent.api_key   (operator's gateway key)
+          MIRAGE_AGENT_BASE_URL  -> agent.base_url  (the gateway, never a vendor host)
+          MIRAGE_AGENT_PROVIDER  -> agent.provider  ("anthropic" | "openai")
+          MIRAGE_AGENT_MODEL     -> agent.model
+        """
+        fw = cls.from_yaml(config_path) if config_path is not None else cls.defaults()
+        overrides = {
+            field: os.environ[name]
+            for field, name in _AGENT_ENV_MAP.items()
+            if os.environ.get(name) is not None
+        }
+        if overrides:
+            # Reconstruct agent via __init__ so AgentConfig's provider
+            # field_validator re-runs (model_copy / setattr skip it; make_client
+            # silently routes any non-"openai" provider to the Anthropic shape,
+            # so an invalid MIRAGE_AGENT_PROVIDER must fail loud at load time).
+            fw.agent = AgentConfig(
+                model=overrides.get("model", fw.agent.model),
+                max_tokens=fw.agent.max_tokens,
+                api_key=overrides.get("api_key", fw.agent.api_key),
+                base_url=overrides.get("base_url", fw.agent.base_url),
+                provider=overrides.get("provider", fw.agent.provider),
+            )
+        return fw
