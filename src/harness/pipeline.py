@@ -21,7 +21,7 @@ from agent.adjustment import (
     deterministic_revise,
     validate_adjustments,
 )
-from agent.agent_core import AgentCore
+from agent.agent_core import AgentCore, LLMError
 from agent.strategy import decide_iteration_priority
 from codegen.call_tree import SkeletonDescriptor
 from codegen.generator import WorkloadGenerator
@@ -770,7 +770,36 @@ class Pipeline:
                 # Structural tier, agent available -- LLM leg.
                 # BUG-FIX #2: use [1] (the adjustments), NOT [0].
                 assert self.agent is not None  # for mypy
-                _revised, cand = self.agent.revise_instruction(instruction, report, sens, history)
+                try:
+                    _revised, cand = self.agent.revise_instruction(
+                        instruction, report, sens, history
+                    )
+                except LLMError as exc:
+                    # A failed LLM call (reasoning-model truncation, transient
+                    # gateway error, malformed JSON) must NOT crash the run --
+                    # degrade this iteration to the deterministic path and
+                    # continue, exactly like agent-unavailable. Reasoning models
+                    # (GLM-4.7/deepseek) truncate often at low max_tokens; raising
+                    # max_tokens (MIRAGE_AGENT_MAX_TOKENS) is the real fix -- this
+                    # is the safety net so one bad call doesn't kill the loop.
+                    logger.warning(
+                        "structural_llm_failed_degrade iter=%d kind=%s err=%s",
+                        i,
+                        type(exc).__name__,
+                        exc,
+                    )
+                    history.degraded = True
+                    tier = "runtime"
+                    _revised = None
+                    cand = deterministic_revise(
+                        instruction,
+                        report,
+                        sens,
+                        history,
+                        oscillation_window=cmp_cfg.oscillation_window,
+                        topdown_threshold_pct=cmp_cfg.topdown_threshold_pct,
+                    )
+                    runtime_candidates_empty = len(cand) == 0
             else:
                 # Degraded mode: priority >= 2, agent unavailable.
                 # Force runtime-tier execution (deterministic).

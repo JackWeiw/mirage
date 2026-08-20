@@ -16,6 +16,7 @@ _AGENT_ENV_MAP: dict[str, str] = {
     "base_url": "MIRAGE_AGENT_BASE_URL",
     "provider": "MIRAGE_AGENT_PROVIDER",
     "model": "MIRAGE_AGENT_MODEL",
+    "max_tokens": "MIRAGE_AGENT_MAX_TOKENS",
 }
 
 
@@ -120,10 +121,13 @@ class FrameworkConfig(BaseModel):
 
         Env vars (all optional; ``MIRAGE_AGENT_API_KEY`` is what flips the agent
         online — ``AgentCore`` builds a client iff ``api_key is not None``):
-          MIRAGE_AGENT_API_KEY   -> agent.api_key   (operator's gateway key)
-          MIRAGE_AGENT_BASE_URL  -> agent.base_url  (the gateway, never a vendor host)
-          MIRAGE_AGENT_PROVIDER  -> agent.provider  ("anthropic" | "openai")
-          MIRAGE_AGENT_MODEL     -> agent.model
+          MIRAGE_AGENT_API_KEY    -> agent.api_key   (operator's gateway key)
+          MIRAGE_AGENT_BASE_URL   -> agent.base_url  (the gateway, never a vendor host)
+          MIRAGE_AGENT_PROVIDER   -> agent.provider  ("anthropic" | "openai")
+          MIRAGE_AGENT_MODEL      -> agent.model
+          MIRAGE_AGENT_MAX_TOKENS -> agent.max_tokens (reasoning models like
+            GLM-4.7 / deepseek-r1 burn thousands of tokens on reasoning before the
+            JSON answer; the 4096 default truncates them mid-thought.)
         """
         fw = cls.from_yaml(config_path) if config_path is not None else cls.defaults()
         overrides = {
@@ -138,7 +142,7 @@ class FrameworkConfig(BaseModel):
             # so an invalid MIRAGE_AGENT_PROVIDER must fail loud at load time).
             fw.agent = AgentConfig(
                 model=overrides.get("model", fw.agent.model),
-                max_tokens=fw.agent.max_tokens,
+                max_tokens=int(overrides.get("max_tokens", fw.agent.max_tokens)),
                 api_key=overrides.get("api_key", fw.agent.api_key),
                 base_url=overrides.get("base_url", fw.agent.base_url),
                 provider=overrides.get("provider", fw.agent.provider),

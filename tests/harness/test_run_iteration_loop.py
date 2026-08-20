@@ -487,6 +487,51 @@ class TestEscalatePath:
         assert rebuilt["wsm"] == 160
         assert result.best_iteration is not None
 
+    def test_structural_llm_failure_degrades_not_crash(self, tmp_path: pathlib.Path) -> None:
+        """A failed structural-tier LLM call (reasoning-model truncation,
+        transient gateway error, malformed JSON) must degrade the iteration to
+        the deterministic path -- NOT crash the loop. Seeds the same -15pp
+        structural gap as test_escalate_structural_adjustment_applied but the
+        agent's revise_instruction raises LLMTruncationError (what GLM-4.7 does
+        at max_tokens=4096)."""
+        from agent.agent_core import LLMTruncationError
+
+        customer = _customer_profile()
+        seed = _seed_instruction()
+        sens = _sensitivity()
+
+        class _CrashingAgent:
+            def is_available(self) -> bool:
+                return True
+
+            def revise_instruction(
+                self,
+                instr: dict[str, Any],
+                report: dict[str, Any],
+                sensitivity: dict[str, dict[str, Any]],
+                history: Any,
+            ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+                raise LLMTruncationError("truncated at max_tokens=4096")
+
+            def run_full_chain(self, profile_json: str) -> dict[str, Any]:
+                return seed
+
+        pipeline = Pipeline(
+            output_base_dir=tmp_path,
+            config=_make_config(tmp_path, no_improvement_stop=2),
+            agent=_CrashingAgent(),  # type: ignore[arg-type]
+        )
+        # Must NOT raise -- the loop degrades instead.
+        result = pipeline.run_iteration_loop(
+            customer_profile=customer,
+            seed_instruction=seed,
+            sensitivity=sens,
+            max_iter=3,
+            collect=_make_collect_stub(),
+            build=_fake_build,
+        )
+        assert result.degraded is True
+
 
 # ---------------------------------------------------------------------------
 # Path #4: oscillation stop
