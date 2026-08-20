@@ -100,6 +100,7 @@ _AGENT_ENVS = (
     "MIRAGE_AGENT_BASE_URL",
     "MIRAGE_AGENT_PROVIDER",
     "MIRAGE_AGENT_MODEL",
+    "MIRAGE_AGENT_MAX_TOKENS",
 )
 
 
@@ -131,6 +132,26 @@ def test_from_env_applies_agent_env_overrides(monkeypatch: pytest.MonkeyPatch) -
     assert fw.agent.base_url == "https://gw.example.com"
     assert fw.agent.provider == "openai"
     assert fw.agent.model == "gpt-4o"
+
+
+def test_from_env_overrides_max_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MIRAGE_AGENT_MAX_TOKENS raises the budget for reasoning models (GLM-4.7 /
+    deepseek-r1 burn thousands of tokens on reasoning; the 4096 default
+    truncates them mid-thought before the JSON answer)."""
+    _clear_agent_envs(monkeypatch)
+    monkeypatch.setenv("MIRAGE_AGENT_API_KEY", "sk-test")
+    monkeypatch.setenv("MIRAGE_AGENT_MAX_TOKENS", "16384")
+    fw = FrameworkConfig.from_env()
+    assert fw.agent.max_tokens == 16384
+
+
+def test_from_env_rejects_non_int_max_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A non-integer MIRAGE_AGENT_MAX_TOKENS fails loud at load time."""
+    _clear_agent_envs(monkeypatch)
+    monkeypatch.setenv("MIRAGE_AGENT_API_KEY", "sk-test")
+    monkeypatch.setenv("MIRAGE_AGENT_MAX_TOKENS", "big")
+    with pytest.raises(ValueError):
+        FrameworkConfig.from_env()
 
 
 def test_from_env_rejects_invalid_provider(monkeypatch: pytest.MonkeyPatch) -> None:
