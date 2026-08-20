@@ -24,3 +24,19 @@ def test_memory_bound_sensitivity_loads_with_rename() -> None:
     # the loader renames on-disk "expected" -> in-memory "expected_direction"
     assert table["working_set_mb"]["expected_direction"] == "up"
     assert table["working_set_mb"]["verdict"] == "controllable"
+
+
+def test_compute_bound_seed_is_memory_dominated() -> None:
+    seed = json.loads((_SCEN / "compute_bound" / "seed_instruction.json").read_text())
+    assert seed["config"]["memory_ratio"] == 0.8
+    assert seed["config"]["compute_ratio"] == 0.2
+    mem = next(s for s in seed["stages"] if s["stage_name"] == "mem_stage")
+    assert mem["strategies"][0]["synthesis_config"]["working_set_mb"] == 256
+    assert mem["strategies"][0]["synthesis_config"]["access_pattern"] == "random"
+
+
+def test_compute_bound_sensitivity_loads() -> None:
+    table = load_sensitivity(_SCEN / "compute_bound" / "sensitivity.json")
+    assert table["compute_ratio"]["target_metric"] == "retiring"
+    assert table["compute_ratio"]["expected_direction"] == "up"
+    assert table["archetype"]["verdict"] == "controllable"

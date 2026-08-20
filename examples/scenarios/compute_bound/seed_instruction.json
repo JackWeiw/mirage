@@ -1,0 +1,41 @@
+{
+  "project_name": "compute_bound_seed",
+  "compile_flags": "-O2 -march=armv8.2-a -fno-inline-small-functions",
+  "dependencies": [],
+  "dep_headers": [],
+  "stages": [
+    {
+      "implementation_strategy": "memory_synthesis",
+      "stage_name": "mem_stage",
+      "strategies": [
+        {
+          "strategy": "memory_synthesis",
+          "synthesis_config": {
+            "iterations": 100,
+            "working_set_mb": 256,
+            "access_pattern": "random"
+          }
+        }
+      ]
+    },
+    {
+      "implementation_strategy": "compute_synthesis",
+      "stage_name": "comp_stage",
+      "strategies": [
+        {
+          "strategy": "compute_synthesis",
+          "synthesis_config": {"archetype": "matmul", "iterations": 10}
+        }
+      ]
+    }
+  ],
+  "config": {
+    "thread_count": 4,
+    "qps": 100,
+    "warmup_seconds": 5,
+    "measurement_seconds": 20,
+    "compute_ratio": 0.2,
+    "memory_ratio": 0.8,
+    "ramp_up_seconds": 5
+  }
+}
