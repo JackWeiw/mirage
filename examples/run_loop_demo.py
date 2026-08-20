@@ -39,6 +39,7 @@ from harness.metrics_collector import MetricsCollector  # noqa: E402
 from harness.pipeline import Pipeline  # noqa: E402
 from models.results import RunFailure  # noqa: E402
 from observability.iteration_history import IterationHistory  # noqa: E402
+from observability.logging import configure_logging_from_env  # noqa: E402
 from profile.profile_schema import Profile  # noqa: E402
 
 DOMINANT = {"memory_bound": "backend_bound", "compute_bound": "retiring"}
@@ -110,6 +111,7 @@ def _print_table(history: IterationHistory) -> None:
 
 
 def main() -> int:
+    configure_logging_from_env()  # before any log is emitted (env: MIRAGE_LOG_LEVEL/JSON)
     ap = argparse.ArgumentParser()
     ap.add_argument("--scenario", required=True, choices=list(DOMINANT))
     ap.add_argument("--max-iter", type=int, default=10)

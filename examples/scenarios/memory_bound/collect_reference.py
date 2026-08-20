@@ -16,8 +16,11 @@ if str(_HERE.parent) not in sys.path:
 
 import collect_common  # type: ignore[import-not-found]  # noqa: E402
 
+from observability.logging import configure_logging_from_env  # noqa: E402
+
 
 def main() -> int:
+    configure_logging_from_env()  # before any log is emitted (env: MIRAGE_LOG_LEVEL/JSON)
     ap = argparse.ArgumentParser()
     ap.add_argument("--binary", required=True)
     ap.add_argument("--out-dir", default=str(_HERE))
