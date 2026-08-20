@@ -167,11 +167,19 @@ class TopdownParser:
         if not filepath.exists():
             raise FileNotFoundError(f"Topdown text file not found: {filepath}")
         text = filepath.read_text(errors="replace")
-        found = {label.lower(): float(value) for label, value in _TOPDOWN_L1_RE.findall(text)}
-        if not found:
+        matches = _TOPDOWN_L1_RE.findall(text)
+        if not matches:
             raise ValueError(
                 f"No Topdown L1 lines found in {filepath}; first 200 chars: {text[:200]!r}"
             )
+        # The devkit emits one L1 block per -i interval, so a -d 20 -i 3 capture
+        # carries ~6 blocks. Mean across blocks is the steady-state topdown
+        # (last-wins grabbed an arbitrary single interval; with one block the mean
+        # is that block, so single-report behavior is unchanged).
+        by_label: dict[str, list[float]] = {}
+        for label, value in matches:
+            by_label.setdefault(label.lower(), []).append(float(value))
+        found = {label: sum(vals) / len(vals) for label, vals in by_label.items()}
         topdown_l1 = TopdownL1(
             frontend_bound=found.get("frontend bound", 0.0),
             backend_bound=found.get("backend bound", 0.0),

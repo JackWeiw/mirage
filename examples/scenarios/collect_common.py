@@ -102,10 +102,17 @@ def synthetic_collect(
     """
     from models.results import RunFailure
 
+    # Resolve the binary to an absolute path BEFORE building launch_cmd: the
+    # loop passes a path rooted at the repo root (e.g.
+    # 'run_out/generated_workload/build/memory_bound_seed'), but we run the
+    # subprocess with cwd=project_dir (the scaffold dir), so a relative binary
+    # path would resolve to <scaffold>/<relative> -> ENOENT -> rc=127. Mirrors
+    # pipeline.run_and_collect (binary = str(Path(binary_path).resolve())).
+    binary_abs = str(pathlib.Path(binary).resolve())
     config_path = str((project_dir / "config.json").resolve())
     launch_cmd: list[str] = [
         *numactl_taskset_prefix(cfg.cpu_mask, cfg.numa_node),
-        str(binary),
+        binary_abs,
         config_path,
     ]
     try:

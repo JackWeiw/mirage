@@ -104,3 +104,37 @@ def test_parse_text_no_l1_lines_raises() -> None:
             parser.parse_text(path)
     finally:
         path.unlink()
+
+
+def test_parse_text_averages_multiple_interval_reports() -> None:
+    # The devkit emits one L1 block per -i interval; -d 6 -i 2 -> 3 blocks here.
+    # parse_text must MEAN across blocks, not last-wins, so a multi-interval
+    # capture reflects the steady-state rather than an arbitrary single block.
+    import tempfile
+
+    block = (
+        "Backend Bound                    70.00\n"
+        "Frontend Bound                   20.00\n"
+        "Bad Speculation                   3.00\n"
+        "Retiring                           7.00\n"
+    )
+    # Second block drifts: backend 74, frontend 16. Mean backend = 72.
+    block2 = (
+        "Backend Bound                    74.00\n"
+        "Frontend Bound                   16.00\n"
+        "Bad Speculation                   3.00\n"
+        "Retiring                           7.00\n"
+    )
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        f.write(block + "\n" + block2 + "\n")
+        path = pathlib.Path(f.name)
+    try:
+        parser = TopdownParser()
+        result = parser.parse_text(path)
+        assert result.topdown is not None
+        assert result.topdown.backend_bound == 72.0  # mean(70, 74)
+        assert result.topdown.frontend_bound == 18.0  # mean(20, 16)
+        assert result.topdown.bad_speculation == 3.0
+        assert result.topdown.retiring == 7.0
+    finally:
+        path.unlink()
