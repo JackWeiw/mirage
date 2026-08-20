@@ -102,14 +102,27 @@ class OpenAIClient(LLMClient):
         return openai.OpenAI(**kwargs)
 
     def complete(self, prompt: str) -> tuple[str, str]:
+        # ``max_tokens`` (not ``max_completion_tokens``): OpenAI-compatible
+        # gateways (vLLM serving GLM/deepseek, etc.) honor max_tokens and silently
+        # ignore max_completion_tokens, which leaves the model at the gateway's
+        # default budget -- reasoning models then truncate mid-reasoning
+        # (finish_reason "length", content=None) and never emit a final answer.
         response = self._sdk.chat.completions.create(
             model=self.model,
-            max_completion_tokens=self.max_tokens,
+            max_tokens=self.max_tokens,
             messages=[{"role": "user", "content": prompt}],
         )
-        content = response.choices[0].message.content
+        msg = response.choices[0].message
+        content = msg.content
+        # Reasoning models (GLM-4.x, deepseek-r1, o1-style) often return
+        # content=None and put the answer in reasoning_content / reasoning.
+        # Fall back to those so the call doesn't crash on a valid response.
         if content is None:
-            raise RuntimeError("OpenAI response had no text content")
+            content = getattr(msg, "reasoning_content", None) or getattr(msg, "reasoning", None)
+        if content is None:
+            raise RuntimeError(
+                "OpenAI response had no text content (content and reasoning_content both None)"
+            )
         text = str(content)
         # Map OpenAI finish_reason onto the normalized stop_reason AgentCore uses.
         # "length" (token limit) and "content_filter" (censored/incomplete) both
