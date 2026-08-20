@@ -1,0 +1,13 @@
+# Shared collection parameters for the memory_bound scenario.
+# Read by collect_reference.py (reference side) AND run_loop_demo.py (synthetic side)
+# so both captures use IDENTICAL conditions: same duration, interval, perf rate, CPU
+# pinning, NUMA binding. Edit cpu_mask + numa_node for your Kunpeng SKU.
+duration_seconds: 20
+interval_seconds: 3
+perf_freq: 99
+cpu_mask: "0-63"        # taskset -c cpu list; pin to the cores the workload owns
+numa_node: "0"          # numactl --cpunodebind/--membind node owning cpu_mask
+per_worker_buffer_mb: 64   # >= 2-3x the per-NUMA-node LLC (16MB LLC -> 64MB)
+warmup_seconds: 5
+measurement_seconds: 20
+llc_miss_floor_pct: 90.0   # memory_bound capture gate: cache-miss rate must exceed this
