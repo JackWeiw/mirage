@@ -6,15 +6,15 @@ Agent is optional — Pipeline works in local-only mode without it.
 """
 
 import json
-import logging
 import pathlib
 import time
 from typing import Any, cast
 
 from agent.llm_client import LLMClient, make_client
 from config.framework_config import AgentConfig
+from observability.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger("agent_core")
 
 PROMPTS_DIR = pathlib.Path(__file__).parent / "prompts"
 
@@ -151,7 +151,7 @@ class AgentCore:
                     raise LLMTransientError(
                         f"LLM call failed after {_MAX_RETRIES + 1} attempts"
                     ) from exc
-                logger.warning("llm_transient_retry attempt=%d error=%s", attempt, exc)
+                logger.warning("llm_transient_retry", attempt=attempt, error=exc)
                 time.sleep(_BACKOFF_BASE_SECONDS * (2**attempt))
         raise LLMTransientError(f"LLM call failed after {_MAX_RETRIES + 1} attempts") from last_exc
 

@@ -5,12 +5,13 @@ The loop driver (PR 3) wires these into run_iteration_loop.
 """
 
 import json
-import logging
 import pathlib
 from copy import deepcopy
 from typing import Any
 
-_log = logging.getLogger(__name__)
+from observability.logging import get_logger
+
+logger = get_logger("adjustment")
 
 # --- Named knob space (RFC 0003 §1) + valid domains ---
 
@@ -228,12 +229,12 @@ def validate_adjustments(
 
         # from-mismatch: warn only.
         if adj.get("from") is not None and adj["from"] != actual:
-            _log.warning(
-                "adjustment from-mismatch: knob=%s from=%s actual=%s to=%s",
-                knob,
-                adj["from"],
-                actual,
-                to,
+            logger.warning(
+                "adjustment_from_mismatch",
+                knob=knob,
+                from_=adj["from"],
+                actual=actual,
+                to=to,
             )
 
         accepted.append(adj)
