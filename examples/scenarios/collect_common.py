@@ -149,3 +149,170 @@ def synthetic_collect(
     if prof.topdown is None:
         return RunFailure(reason="no_topdown_l1_lines", kind="collect_fail")
     return prof
+
+
+# ---------------------------------------------------------------------------
+# Reference-side capture helpers (used by collect_reference.py entry points)
+# ---------------------------------------------------------------------------
+
+_MARKER = "__MEASUREMENT_WINDOW_START__"
+
+
+def _wait_for_marker(proc: object, timeout: int) -> bool:
+    """Block until the binary prints the steady-state marker; False on timeout/early exit."""
+    deadline = time.monotonic() + timeout
+    stdout = getattr(proc, "stdout", None)
+    if stdout is None:
+        return False
+    for line in stdout:
+        if _MARKER in line:
+            return True
+        if time.monotonic() > deadline:
+            return False
+    return False  # process exited before the marker
+
+
+def _extract_perf_value(text: str, event: str) -> int:
+    """Extract the numeric counter value for `event` from perf-stat output."""
+    for line in text.splitlines():
+        if event in line:
+            for p in line.split():
+                p = p.replace(",", "")
+                if p.isdigit():
+                    return int(p)
+    return 0
+
+
+def _llc_miss_rate(binary: str, cfg: "CollectionConfig", project_dir: pathlib.Path) -> float:
+    """cache-misses / cache-references over a short perf-stat window (memory_bound gate)."""
+    try:
+        out = subprocess.run(
+            [
+                "perf",
+                "stat",
+                "-e",
+                "cache-misses,cache-references",
+                "--",
+                *numactl_taskset_prefix(cfg.cpu_mask, cfg.numa_node),
+                binary,
+                str(project_dir / "config.json"),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=cfg.measurement_seconds + 10,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return 100.0  # perf stat unavailable -> don't block the capture
+    text = out.stderr + out.stdout
+    misses = _extract_perf_value(text, "cache-misses")
+    refs = _extract_perf_value(text, "cache-references")
+    if refs == 0:
+        return 100.0
+    return (misses / refs) * 100.0
+
+
+def run_reference_capture(
+    binary: str,
+    scenario_dir: pathlib.Path,
+    devkit_cmd: str | None = None,
+    *,
+    cfg: "CollectionConfig | None" = None,
+    metrics: object | None = None,
+) -> int:
+    """Reference-side capture: numactl+taskset launch, marker-gated collection,
+    LLC-miss gate (memory_bound), writes topdown.json + flamegraph.svg (non-fatal).
+
+    Defaults `cfg`/`metrics` from `scenario_dir`/`devkit_cmd` when not passed, so
+    the entry points stay thin but tests can inject fakes.
+    """
+    if cfg is None:
+        cfg = CollectionConfig.from_yaml(scenario_dir / "collection.yaml")
+    if metrics is None:
+        from harness.metrics_collector import MetricsCollector
+
+        metrics = MetricsCollector(devkit_cmd=devkit_cmd)
+
+    out_dir = scenario_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+    project_dir = pathlib.Path(binary).resolve().parent
+    # ensure config.json exists (reference binary reads argv[1]=config path).
+    cfg_path = project_dir / "config.json"
+    if not cfg_path.exists():
+        cfg_path.write_text("{}")
+
+    # LLC-miss gate (only memory_bound sets llc_miss_floor_pct > 0).
+    if cfg.llc_miss_floor_pct > 0.0:
+        miss_rate = _llc_miss_rate(binary, cfg, project_dir)
+        if miss_rate < cfg.llc_miss_floor_pct:
+            print(
+                f"WARNING: LLC-miss rate {miss_rate:.1f}% < {cfg.llc_miss_floor_pct}% "
+                f"— per_worker_buffer_mb={cfg.per_worker_buffer_mb} is too small for "
+                f"this box's LLC. Increase it in collection.yaml and re-capture."
+            )
+            return 2
+
+    launch = [
+        *numactl_taskset_prefix(cfg.cpu_mask, cfg.numa_node),
+        binary,
+        str(cfg_path),
+    ]
+    perf_rec = subprocess.Popen(
+        [
+            "perf",
+            "record",
+            "-g",
+            "-F",
+            str(cfg.perf_freq),
+            "-o",
+            str(out_dir / "perf.data"),
+            "--",
+            *launch,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    if not _wait_for_marker(perf_rec, cfg.warmup_seconds + 30):
+        print("ERROR: binary did not print the measurement marker in time.")
+        perf_rec.kill()
+        return 1
+
+    td_path = out_dir / "topdown.txt"
+    coll = metrics.collect_topdown(  # type: ignore[attr-defined]
+        td_path,
+        duration=cfg.measurement_seconds,
+        interval=cfg.interval_seconds,
+        pid=perf_rec.pid,
+    )
+    if not coll.success or coll.topdown_path is None:
+        print(f"ERROR: collect_topdown failed: {coll.error}")
+        perf_rec.kill()
+        return 1
+    try:
+        perf_rec.wait(timeout=cfg.measurement_seconds + 30)
+    except subprocess.TimeoutExpired:
+        perf_rec.kill()
+
+    profile = metrics.parse_topdown_file(pathlib.Path(coll.topdown_path))  # type: ignore[attr-defined]
+    (out_dir / "topdown.json").write_text(profile.model_dump_json(indent=2))
+
+    # Flamegraph (non-fatal — any failure is silently ignored).
+    import contextlib
+
+    with contextlib.suppress(Exception):
+        subprocess.run(
+            f"perf script -i {out_dir / 'perf.data'} | "
+            f"flamegraph.pl > {out_dir / 'flamegraph.svg'}",
+            shell=True,
+            check=False,
+            timeout=120,
+        )
+
+    td = profile.topdown
+    if td is not None:
+        print(
+            f"Captured L1: frontend={td.frontend_bound:.1f} backend={td.backend_bound:.1f} "
+            f"bad_spec={td.bad_speculation:.1f} retiring={td.retiring:.1f}"
+        )
+    return 0
