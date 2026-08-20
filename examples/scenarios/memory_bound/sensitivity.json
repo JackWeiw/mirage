@@ -1,0 +1,17 @@
+{
+  "rows": [],
+  "verdicts": [
+    {"knob": "working_set_mb", "target_metric": "backend_bound", "expected": "up",
+     "verdict": "controllable", "values": [16, 64, 256], "metric_values": [30.0, 50.0, 70.0]},
+    {"knob": "access_pattern", "target_metric": "backend_bound", "expected": "up",
+     "verdict": "controllable", "values": ["sequential", "mixed", "random"], "metric_values": [30.0, 50.0, 70.0]},
+    {"knob": "memory_ratio", "target_metric": "backend_bound", "expected": "up",
+     "verdict": "controllable", "values": [0.2, 0.5, 0.8], "metric_values": [35.0, 55.0, 68.0]},
+    {"knob": "compute_ratio", "target_metric": "retiring", "expected": "up",
+     "verdict": "secondary", "values": [0.2, 0.5, 0.8], "metric_values": [25.0, 40.0, 55.0]},
+    {"knob": "thread_count", "target_metric": "frontend_bound", "expected": "up",
+     "verdict": "secondary", "values": [4, 8, 16], "metric_values": [12.0, 16.0, 22.0]},
+    {"knob": "qps", "target_metric": "bad_speculation", "expected": "down",
+     "verdict": "secondary", "values": [100, 500, 1000], "metric_values": [5.0, 4.0, 3.0]}
+  ]
+}
