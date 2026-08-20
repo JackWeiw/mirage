@@ -87,6 +87,9 @@ sys.modules["profile"] = _profile_pkg
 
 from codegen.generator import WorkloadGenerator  # noqa: E402
 from harness.build_runner import BuildRunner  # noqa: E402
+from observability.logging import configure_logging_from_env, get_logger  # noqa: E402
+
+logger = get_logger("steerability_spike")
 
 # Workload runs this many seconds longer than the devkit collection so the
 # process is still alive when devkit finishes (avoids the -p <pid> exit race).
@@ -541,7 +544,7 @@ def run_spike(args: argparse.Namespace) -> int:
                 )
             )
             sweep["mutator"](instr, value)
-            print(f"[spike] {point_id}: build + run + collect ...", flush=True)
+            logger.info("spike_point_start", point=point_id)
             row = run_one_point(
                 point_id,
                 instr,
@@ -558,13 +561,14 @@ def run_spike(args: argparse.Namespace) -> int:
             row["target_metric"] = sweep["target_metric"]
             row["expected"] = sweep["expected"]
             if "error" in row:
-                print(f"[spike] {point_id}: ERROR {row['error']}", flush=True)
+                logger.error("spike_point_error", point=point_id, error=row["error"])
             else:
                 td1 = row["topdown_l1"]
-                print(
-                    f"[spike] {point_id}: backend={td1['backend_bound']} "
-                    f"retiring={td1['retiring']}",
-                    flush=True,
+                logger.info(
+                    "spike_point_metrics",
+                    point=point_id,
+                    backend=td1["backend_bound"],
+                    retiring=td1["retiring"],
                 )
             rows.append(row)
 
@@ -617,7 +621,11 @@ def run_spike(args: argparse.Namespace) -> int:
         "`archetype`, `compute_ratio`, `memory_ratio` are each `controllable`."
     )
     (out_root / "sensitivity.md").write_text("\n".join(lines) + "\n")
-    print(f"[spike] wrote {out_root / 'sensitivity.json'} and {out_root / 'sensitivity.md'}")
+    logger.info(
+        "wrote_sensitivity",
+        json=str(out_root / "sensitivity.json"),
+        md=str(out_root / "sensitivity.md"),
+    )
 
     key = {"working_set_mb", "access_pattern", "archetype", "compute_ratio", "memory_ratio"}
     controllable = {v["knob"]: v["verdict"] == "controllable" for v in verdicts if v["knob"] in key}
@@ -627,6 +635,7 @@ def run_spike(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
+    configure_logging_from_env()  # before any log is emitted (env: MIRAGE_LOG_LEVEL/JSON)
     p = argparse.ArgumentParser(description="Steerability spike (RFC 0003 gate).")
     p.add_argument("--out-dir", default="./spike_out", help="output directory")
     p.add_argument(
