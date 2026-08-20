@@ -97,13 +97,15 @@ def evaluate_criteria(
 
 
 def _print_table(history: IterationHistory) -> None:
-    print("iter | conv | prio | backend | frontend | badspec | retiring | score")
+    print("iter | conv | prio | backend | frontend | badspec | retiring | score | failed | reason")
     for r in history.records:
         td = r.topdown_diffs
+        reason = r.failure_reason if r.failed else ""
         print(
             f"{r.iteration:4d} | {r.converged!s:5s} | {r.strategy_priority:4d} | "
             f"{td.get('backend_bound', 0):7.1f} | {td.get('frontend_bound', 0):7.1f} | "
-            f"{td.get('bad_speculation', 0):7.1f} | {td.get('retiring', 0):7.1f} | {r.score}"
+            f"{td.get('bad_speculation', 0):7.1f} | {td.get('retiring', 0):7.1f} | "
+            f"{r.score} | {r.failed!s:5s} | {reason}"
         )
 
 
