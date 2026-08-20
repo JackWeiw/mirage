@@ -3,7 +3,17 @@
 reference Topdown via the LLM structural tier, then judge the four success criteria.
 
   PYTHONPATH=src python3 examples/run_loop_demo.py --scenario memory_bound \
-      [--max-iter 10] [--threshold 10] [--out-dir run_out] [--no-agent]
+      [--max-iter 10] [--threshold 10] [--out-dir run_out] [--no-agent] \
+      [--config path/to/fw.yaml]
+
+The LLM (structural) tier is configured via the operator's gateway env vars,
+honored by FrameworkConfig.from_env (PR #64):
+  MIRAGE_AGENT_API_KEY   -> gateway key   (sets the agent online)
+  MIRAGE_AGENT_BASE_URL  -> the gateway   (never a vendor official host)
+  MIRAGE_AGENT_PROVIDER  -> "anthropic" | "openai"
+  MIRAGE_AGENT_MODEL     -> model id
+Use --config to layer a YAML FrameworkConfig under those env overrides
+(precedence: yaml < env). --no-agent forces offline/runtime-only regardless.
 """
 
 import argparse
@@ -104,6 +114,13 @@ def main() -> int:
     ap.add_argument("--threshold", type=float, default=10.0)
     ap.add_argument("--out-dir", default="run_out")
     ap.add_argument("--no-agent", action="store_true")
+    ap.add_argument(
+        "--config",
+        type=pathlib.Path,
+        default=None,
+        help="FrameworkConfig YAML path; layered UNDER the MIRAGE_AGENT_* env "
+        "overrides (precedence: yaml < env). Default: defaults().",
+    )
     args = ap.parse_args()
 
     scen_dir = _HERE / "scenarios" / args.scenario
@@ -112,7 +129,9 @@ def main() -> int:
     sens = load_sensitivity(scen_dir / "sensitivity.json")
     cfg = collect_common.CollectionConfig.from_yaml(scen_dir / "collection.yaml")
 
-    fw = FrameworkConfig.defaults()
+    # from_env: defaults() (or --config yaml) + MIRAGE_AGENT_* env overrides.
+    # With no env and no --config this is identical to defaults() -> offline.
+    fw = FrameworkConfig.from_env(args.config)
     fw.comparison.topdown_threshold_pct = args.threshold
     if args.no_agent:
         fw.agent = AgentConfig(model=fw.agent.model, api_key=None)  # -> degraded
@@ -122,8 +141,9 @@ def main() -> int:
     if not args.no_agent and not agent.is_available():
         print(
             "ERROR: agent unavailable and --no-agent not set. A ~35pp gap needs the "
-            "structural tier. Set the box's gateway base_url+api_key (PR #55) first, "
-            "or re-run with --no-agent for runtime-only."
+            "structural tier. Set the gateway via env (PR #64): "
+            "MIRAGE_AGENT_API_KEY / MIRAGE_AGENT_BASE_URL / MIRAGE_AGENT_PROVIDER / "
+            "MIRAGE_AGENT_MODEL, or re-run with --no-agent for runtime-only."
         )
         return 1
 
