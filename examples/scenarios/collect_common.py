@@ -174,9 +174,7 @@ def synthetic_collect(
     return prof
 
 
-# ---------------------------------------------------------------------------
 # Reference-side capture helpers (used by collect_reference.py entry points)
-# ---------------------------------------------------------------------------
 
 _MARKER = "__MEASUREMENT_WINDOW_START__"
 

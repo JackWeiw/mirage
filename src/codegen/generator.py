@@ -92,7 +92,6 @@ class WorkloadGenerator:
         ordered = self._topo_order(graph)
         impl_files: list[str] = []
 
-        # Phase 1: contracts (headers).
         for mod in ordered:
             dep_headers = [f'"{dep}.h"' for dep in mod.depends_on]
             decls = [
@@ -106,7 +105,6 @@ class WorkloadGenerator:
             )
             (output_dir / f"{mod.name}.h").write_text(content)
 
-        # Phase 2: implementations.
         for mod in ordered:
             sigs = [*mod.public_interface, *mod.internal_functions]
             bodies = [self.behavior._render_for_module(sig, env) for sig in sigs]

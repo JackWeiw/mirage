@@ -68,7 +68,6 @@ def test_pipeline_local_only_with_manual_instruction() -> None:
     no_agent = AgentCore(config=AgentConfig(api_key=None))
     pipeline = Pipeline(output_base_dir=output_dir, agent=no_agent)
 
-    # Provide manual instruction
     instruction = {
         "project_name": "test_local_workload",
         "compile_flags": "-O2",
@@ -92,7 +91,6 @@ def test_pipeline_local_only_with_manual_instruction() -> None:
         "config": {"thread_count": 4, "qps": 100},
     }
 
-    # Create a minimal customer profile
     customer_profile = Profile(
         metadata=ProfileMetadata(customer="test", date="2026-07-27"),
         topdown=TopdownL1(
@@ -150,7 +148,6 @@ def test_pipeline_compare_results() -> None:
     no_agent = AgentCore(config=AgentConfig(api_key=None))
     pipeline = Pipeline(output_base_dir=output_dir, agent=no_agent)
 
-    # Ingest customer data
     customer_profile = pipeline.ingest_customer_data(
         flamegraph_path=EXAMPLES_DIR / "flamegraph_folded.txt",
         topdown_path=EXAMPLES_DIR / "topdown.json",

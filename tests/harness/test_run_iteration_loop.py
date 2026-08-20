@@ -20,9 +20,7 @@ from profile.profile_schema import (
     TopdownL1,
 )
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 def _customer_profile() -> Profile:
@@ -196,9 +194,7 @@ def _make_collect_stub(
     return collect
 
 
-# ---------------------------------------------------------------------------
 # Path #1: converge
-# ---------------------------------------------------------------------------
 
 
 class TestConvergePath:
@@ -306,9 +302,7 @@ class TestConvergePath:
         assert rec0.observed_effects["backend_bound"] != 0.0
 
 
-# ---------------------------------------------------------------------------
 # observed_effects attribution: runtime single-adjustment
-# ---------------------------------------------------------------------------
 
 
 class TestObservedEffectsRuntime:
@@ -359,9 +353,7 @@ class TestObservedEffectsRuntime:
         assert found_nonzero, "expected at least one runtime record with non-zero observed_effects"
 
 
-# ---------------------------------------------------------------------------
 # Path #2: max_iter / best_iteration by score
-# ---------------------------------------------------------------------------
 
 
 class TestMaxIterPath:
@@ -406,9 +398,7 @@ class TestMaxIterPath:
         assert result.degraded is True
 
 
-# ---------------------------------------------------------------------------
 # Path #3: escalate to LLM tier
-# ---------------------------------------------------------------------------
 
 
 class TestEscalatePath:
@@ -533,9 +523,7 @@ class TestEscalatePath:
         assert result.degraded is True
 
 
-# ---------------------------------------------------------------------------
 # Path #4: oscillation stop
-# ---------------------------------------------------------------------------
 
 
 class TestOscillationPath:
@@ -597,9 +585,7 @@ class TestOscillationPath:
         assert result.degraded is True
 
 
-# ---------------------------------------------------------------------------
 # Path #5: no_improvement stop
-# ---------------------------------------------------------------------------
 
 
 class TestNoImprovementPath:
@@ -652,9 +638,7 @@ class TestNoImprovementPath:
         assert result.degraded is True
 
 
-# ---------------------------------------------------------------------------
 # Path #6: run-failure streak
-# ---------------------------------------------------------------------------
 
 
 class TestRunFailureStreakPath:
@@ -686,9 +670,7 @@ class TestRunFailureStreakPath:
         assert result.success is False
 
 
-# ---------------------------------------------------------------------------
 # Path #7: build-failure streak
-# ---------------------------------------------------------------------------
 
 
 class TestBuildFailureStreakPath:
@@ -785,9 +767,7 @@ class TestBuildFailureStreakPath:
         assert result.success is False
 
 
-# ---------------------------------------------------------------------------
 # Path #7b: build-failure records the REAL compiler stderr
-# ---------------------------------------------------------------------------
 
 
 class TestBuildFailureStderrPath:
@@ -867,9 +847,7 @@ class TestBuildFailureStderrPath:
         assert result.stop_reason == "build_failure_streak"
 
 
-# ---------------------------------------------------------------------------
 # Path #7b: build-failure self-correction via the LLM's revised instruction
-# ---------------------------------------------------------------------------
 
 
 class TestBuildFailureSelfCorrectionPath:
@@ -976,9 +954,7 @@ class TestBuildFailureSelfCorrectionPath:
         assert "_llm_code_fix" in build_instructions[2]
 
 
-# ---------------------------------------------------------------------------
 # Path #8: degraded mode
-# ---------------------------------------------------------------------------
 
 
 class TestDegradedPath:

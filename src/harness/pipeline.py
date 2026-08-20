@@ -433,9 +433,7 @@ class Pipeline:
             logger.error("pipeline_failed", error=str(e))
             return PipelineResult(success=False, error=str(e))
 
-    # ------------------------------------------------------------------
     # Phase 2 -- auto-iteration loop driver (two-tier)
-    # ------------------------------------------------------------------
 
     def _build_instruction(
         self,

@@ -99,7 +99,6 @@ class BuildRunner:
         build_dir = project_dir / self.build_dir_suffix
         build_dir.mkdir(parents=True, exist_ok=True)
 
-        # Step 1: cmake configure
         cmake_cmd = [self.cmake_path, "-S", str(project_dir), "-B", str(build_dir)]
         logger.info("running_cmake", cmd=cmake_cmd)
 
@@ -126,7 +125,6 @@ class BuildRunner:
                 duration_seconds=time.monotonic() - start,
             )
 
-        # Step 2: make compile
         make_cmd = [self.make_path, "-C", str(build_dir)]
         logger.info("running_make", cmd=make_cmd)
 
@@ -153,7 +151,6 @@ class BuildRunner:
                 duration_seconds=time.monotonic() - start,
             )
 
-        # Step 3: locate binary
         binary = _locate_binary(build_dir, project_dir)
 
         return BuildResult(
