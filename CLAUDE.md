@@ -149,11 +149,11 @@ Jinja2 templates are the codegen output surface — `main/main.cpp.j2` (time-box
 ### Logging (mandatory)
 
 - **Use the Python `logging` module — never `print`.**
-- The framework provides `observability.logging.get_logger(name)` returning a structlog `BoundLogger` bound with `component=name`, configured via `configure_logging(log_level, json_output)`. structlog routes through the stdlib level filter (`make_filtering_bound_logger`), so stdlib levels (`logging.INFO` etc.) apply.
+- The framework provides `observability.logging.get_logger(name)` returning a structlog `BoundLogger` bound with `component=name`, configured via `configure_logging(log_level, json_output)` (or `configure_logging_from_env`, reading `MIRAGE_LOG_LEVEL`/`MIRAGE_LOG_JSON`, called once at an application entry point before any log is emitted). structlog routes through the stdlib level filter (`make_filtering_bound_logger`), so stdlib levels (`logging.INFO` etc.) apply.
 - **Convention:**
-  - In `src/` framework modules, use `from observability.logging import get_logger; logger = get_logger("<module>")` (structured key=value events, e.g. `logger.info("build_succeeded", binary=...)`).
-  - `src/agent/agent_core.py` uses `logging.getLogger(__name__)` (stdlib) directly — this is the legacy exception; when touching it, keep its stdlib form for SDK-call logging. Do **not** introduce a third style: pick one of these two per module and stay consistent.
+  - All `src/` framework modules use a single style: `from observability.logging import get_logger; logger = get_logger("<module>")` (structured key=value events, e.g. `logger.info("build_succeeded", binary=...)`). Do not use stdlib `logging.getLogger` in `src/`.
   - Levels: `DEBUG` (verbose internal transitions), `INFO` (lifecycle/progress events), `WARNING` (recoverable issues, retries, degradation), `ERROR` (failures — build/run failures, pipeline errors).
+  - Library code (`Pipeline` etc.) never calls `configure_logging` — only application entry points do, so imports have no global logging side effects and unit tests stay deterministic.
   - Never log secrets: `AgentConfig.api_key` is `Field(repr=False)`; api keys travel only in SDK auth headers, never in log lines, prompt bodies, or LLM responses.
 
 ### Git / commit / PR rules (mandatory)

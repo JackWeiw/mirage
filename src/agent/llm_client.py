@@ -9,13 +9,13 @@ injects a vendor official host itself, so a None ``base_url`` is the only path
 that can reach a vendor endpoint, and only because the operator left it unset.
 """
 
-import logging
 from abc import ABC, abstractmethod
 from typing import Any
 
 from config.framework_config import AgentConfig
+from observability.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger("llm_client")
 
 
 class LLMClient(ABC):
@@ -33,7 +33,7 @@ class LLMClient(ABC):
         try:
             self._sdk = self._build_sdk_client()
         except ImportError:
-            logger.warning("%s_sdk_not_installed", self.__class__.__name__.lower())
+            logger.warning("sdk_not_installed", client=self.__class__.__name__.lower())
 
     @abstractmethod
     def _build_sdk_client(self) -> Any:
