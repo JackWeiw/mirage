@@ -39,8 +39,10 @@ from harness.metrics_collector import MetricsCollector  # noqa: E402
 from harness.pipeline import Pipeline  # noqa: E402
 from models.results import RunFailure  # noqa: E402
 from observability.iteration_history import IterationHistory  # noqa: E402
-from observability.logging import configure_logging_from_env  # noqa: E402
+from observability.logging import configure_logging_from_env, get_logger  # noqa: E402
 from profile.profile_schema import Profile  # noqa: E402
+
+logger = get_logger("run_loop_demo")
 
 DOMINANT = {"memory_bound": "backend_bound", "compute_bound": "retiring"}
 
@@ -143,11 +145,13 @@ def main() -> int:
 
     # Agent gate: structural tier required unless --no-agent.
     if not args.no_agent and not agent.is_available():
-        print(
-            "ERROR: agent unavailable and --no-agent not set. A ~35pp gap needs the "
-            "structural tier. Set the gateway via env (PR #64): "
-            "MIRAGE_AGENT_API_KEY / MIRAGE_AGENT_BASE_URL / MIRAGE_AGENT_PROVIDER / "
-            "MIRAGE_AGENT_MODEL, or re-run with --no-agent for runtime-only."
+        logger.error(
+            "agent_unavailable",
+            hint=(
+                "A ~35pp gap needs the structural tier. Set the gateway via env "
+                "(MIRAGE_AGENT_API_KEY / _BASE_URL / _PROVIDER / _MODEL) or re-run "
+                "with --no-agent for runtime-only."
+            ),
         )
         return 1
 

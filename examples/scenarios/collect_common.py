@@ -25,6 +25,10 @@ from typing import cast  # noqa: E402
 
 import yaml  # noqa: E402
 
+from observability.logging import get_logger  # noqa: E402
+
+logger = get_logger("collect_common")
+
 
 class CollectionConfig:
     """Typed view of a scenario's collection.yaml (shared by both sides)."""
@@ -247,13 +251,13 @@ def run_reference_capture(
     dir holding `stackcollapse-perf.pl` + `flamegraph.pl` (Brendan Gregg's FlameGraph
     repo); None -> skip the flamegraph step with a NOTE.
     """
-    print(f"[1/6] load collection.yaml from {scenario_dir / 'collection.yaml'}")
+    logger.info("load_collection_yaml", path=str(scenario_dir / "collection.yaml"))
     if cfg is None:
         cfg = CollectionConfig.from_yaml(scenario_dir / "collection.yaml")
     if metrics is None:
         from harness.metrics_collector import MetricsCollector
 
-        print(f"[1/6] devkit_cmd={devkit_cmd!r}")
+        logger.info("devkit_cmd_resolved", devkit_cmd=devkit_cmd)
         metrics = MetricsCollector(devkit_cmd=devkit_cmd)
 
     out_dir = scenario_dir
@@ -266,28 +270,30 @@ def run_reference_capture(
 
     # LLC-miss gate (only memory_bound sets llc_miss_floor_pct > 0).
     if cfg.llc_miss_floor_pct > 0.0:
-        print(
-            f"[2/6] LLC-miss gate: require >{cfg.llc_miss_floor_pct}% "
-            f"(per_worker_buffer_mb={cfg.per_worker_buffer_mb})"
+        logger.info(
+            "llc_miss_gate_required",
+            floor=cfg.llc_miss_floor_pct,
+            per_worker_buffer_mb=cfg.per_worker_buffer_mb,
         )
         miss_rate = _llc_miss_rate(binary, cfg, project_dir)
         if miss_rate < cfg.llc_miss_floor_pct:
-            print(
-                f"WARNING: LLC-miss rate {miss_rate:.1f}% < {cfg.llc_miss_floor_pct}% "
-                f"— per_worker_buffer_mb={cfg.per_worker_buffer_mb} is too small for "
-                f"this box's LLC. Increase it in collection.yaml and re-capture."
+            logger.warning(
+                "llc_miss_rate_below_floor",
+                miss_rate=miss_rate,
+                floor=cfg.llc_miss_floor_pct,
+                per_worker_buffer_mb=cfg.per_worker_buffer_mb,
             )
             return 2
-        print(f"[2/6] LLC-miss rate {miss_rate:.1f}% >= {cfg.llc_miss_floor_pct}% OK")
+        logger.info("llc_miss_gate_ok", miss_rate=miss_rate, floor=cfg.llc_miss_floor_pct)
     else:
-        print("[2/6] LLC-miss gate: skipped (scenario does not set a floor)")
+        logger.info("llc_miss_gate_skipped")
 
     launch = [
         *numactl_taskset_prefix(cfg.cpu_mask, cfg.numa_node),
         binary,
         str(cfg_path),
     ]
-    print(f"[3/6] launch: {' '.join(launch)}")
+    logger.info("launch", cmd=" ".join(launch))
     perf_rec = subprocess.Popen(
         [
             "perf",
@@ -305,17 +311,19 @@ def run_reference_capture(
         text=True,
     )
 
-    print(f"[4/6] wait for steady-state marker {_MARKER!r} (warmup+30s budget)")
+    logger.info("wait_for_marker", marker=_MARKER, budget=cfg.warmup_seconds + 30)
     if not _wait_for_marker(perf_rec, cfg.warmup_seconds + 30):
-        print("ERROR: binary did not print the measurement marker in time.")
+        logger.error("marker_timeout")
         perf_rec.kill()
         return 1
-    print("[4/6] marker seen -> start topdown collection")
+    logger.info("marker_seen_start_collection")
 
     td_path = out_dir / "topdown.txt"
-    print(
-        f"[5/6] collect_topdown duration={cfg.measurement_seconds}s "
-        f"interval={cfg.interval_seconds}s pid={perf_rec.pid}"
+    logger.info(
+        "collect_topdown_start",
+        duration=cfg.measurement_seconds,
+        interval=cfg.interval_seconds,
+        pid=perf_rec.pid,
     )
     coll = metrics.collect_topdown(  # type: ignore[attr-defined]
         td_path,
@@ -324,7 +332,7 @@ def run_reference_capture(
         pid=perf_rec.pid,
     )
     if not coll.success or coll.topdown_path is None:
-        print(f"ERROR: collect_topdown failed: {coll.error}")
+        logger.error("collect_topdown_failed", error=coll.error)
         perf_rec.kill()
         return 1
     try:
@@ -332,14 +340,14 @@ def run_reference_capture(
     except subprocess.TimeoutExpired:
         perf_rec.kill()
 
-    print(f"[5/6] parse topdown -> {out_dir / 'topdown.json'}")
+    logger.info("parse_topdown", path=str(out_dir / "topdown.json"))
     profile = metrics.parse_topdown_file(pathlib.Path(coll.topdown_path))  # type: ignore[attr-defined]
     (out_dir / "topdown.json").write_text(profile.model_dump_json(indent=2))
 
     # Flamegraph (non-fatal): perf script | stackcollapse-perf.pl | flamegraph.pl.
     # Mirrors the operator's proven pipeline; both scripts live in flamegraph_dir
     # (Brendan Gregg's FlameGraph repo). Missing scripts -> NOTE, not a silent skip.
-    print(f"[6/6] flamegraph (dir={flamegraph_dir!r})")
+    logger.info("flamegraph_step", flamegraph_dir=flamegraph_dir)
     if flamegraph_dir is not None:
         import contextlib
 
@@ -357,19 +365,23 @@ def run_reference_capture(
                     timeout=120,
                 )
             if (out_dir / "flamegraph.svg").is_file():
-                print(f"[6/6] wrote {out_dir / 'flamegraph.svg'}")
+                logger.info("wrote_flamegraph", path=str(out_dir / "flamegraph.svg"))
             else:
-                print("NOTE: flamegraph scripts ran but no .svg produced (perf.data empty?)")
+                logger.warning("flamegraph_no_svg", reason="scripts ran but no svg produced")
         else:
-            print(
-                f"NOTE: skipping flamegraph — {collapse} / {flame} not found. "
-                f"Clone https://github.com/brendangregg/FlameGraph and pass --flamegraph-dir."
+            logger.warning(
+                "flamegraph_scripts_missing",
+                collapse=str(collapse),
+                flame=str(flame),
             )
 
     td = profile.topdown
     if td is not None:
-        print(
-            f"Captured L1: frontend={td.frontend_bound:.1f} backend={td.backend_bound:.1f} "
-            f"bad_spec={td.bad_speculation:.1f} retiring={td.retiring:.1f}"
+        logger.info(
+            "captured_l1",
+            frontend=td.frontend_bound,
+            backend=td.backend_bound,
+            bad_spec=td.bad_speculation,
+            retiring=td.retiring,
         )
     return 0
