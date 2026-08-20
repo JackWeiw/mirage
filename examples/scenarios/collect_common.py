@@ -128,7 +128,11 @@ def synthetic_collect(
 
     instr_cfg_raw = instr.get("config", {}) if isinstance(instr, dict) else {}
     instr_cfg = cast("dict[str, object]", instr_cfg_raw)
+    # Time the collect from the INSTRUCTION's config (what the binary actually
+    # runs), not collection.yaml -- the two can diverge and a mismatch either
+    # samples the wrong window or sizes the reap budget wrong.
     warmup = int(cast("int", instr_cfg.get("warmup_seconds", cfg.warmup_seconds)))
+    measurement = int(cast("int", instr_cfg.get("measurement_seconds", cfg.measurement_seconds)))
     time.sleep(warmup)
     if proc.poll() is not None:
         return RunFailure(
@@ -140,18 +144,26 @@ def synthetic_collect(
     pid = int(proc.pid)
     coll = metrics.collect_topdown(  # type: ignore[attr-defined]
         td_path,
-        duration=cfg.measurement_seconds,
+        duration=measurement,
         interval=cfg.interval_seconds,
         pid=pid,
     )
     if not coll.success or coll.topdown_path is None:
-        proc.wait(timeout=cfg.measurement_seconds + 30)
+        try:
+            proc.wait(timeout=measurement + 30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
         return RunFailure(reason=coll.error or "collect_failed", kind="collect_fail")
+    # Collect SUCCEEDED -- the topdown was captured over the measurement window.
+    # The binary may linger after measurement (threadpool teardown / a runtime
+    # slightly over budget); reap it with a pad and, if it hangs, kill it and
+    # USE the data we already captured. A post-measurement cleanup hang does NOT
+    # invalidate the sampled profile -- the old code discarded it (workload_hang)
+    # and caused false run_failure_streak.
     try:
-        proc.wait(timeout=cfg.measurement_seconds + 30)
+        proc.wait(timeout=30)
     except subprocess.TimeoutExpired:
         proc.kill()
-        return RunFailure(reason="workload_hang", kind="timeout")
     prof = metrics.parse_topdown_file(pathlib.Path(coll.topdown_path))  # type: ignore[attr-defined]
     if prof.topdown is None:
         return RunFailure(reason="no_topdown_l1_lines", kind="collect_fail")
