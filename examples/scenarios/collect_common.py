@@ -218,18 +218,23 @@ def run_reference_capture(
     *,
     cfg: "CollectionConfig | None" = None,
     metrics: object | None = None,
+    flamegraph_dir: str | None = "FlameGraph",
 ) -> int:
     """Reference-side capture: numactl+taskset launch, marker-gated collection,
     LLC-miss gate (memory_bound), writes topdown.json + flamegraph.svg (non-fatal).
 
     Defaults `cfg`/`metrics` from `scenario_dir`/`devkit_cmd` when not passed, so
-    the entry points stay thin but tests can inject fakes.
+    the entry points stay thin but tests can inject fakes. `flamegraph_dir` is the
+    dir holding `stackcollapse-perf.pl` + `flamegraph.pl` (Brendan Gregg's FlameGraph
+    repo); None -> skip the flamegraph step with a NOTE.
     """
+    print(f"[1/6] load collection.yaml from {scenario_dir / 'collection.yaml'}")
     if cfg is None:
         cfg = CollectionConfig.from_yaml(scenario_dir / "collection.yaml")
     if metrics is None:
         from harness.metrics_collector import MetricsCollector
 
+        print(f"[1/6] devkit_cmd={devkit_cmd!r}")
         metrics = MetricsCollector(devkit_cmd=devkit_cmd)
 
     out_dir = scenario_dir
@@ -242,6 +247,10 @@ def run_reference_capture(
 
     # LLC-miss gate (only memory_bound sets llc_miss_floor_pct > 0).
     if cfg.llc_miss_floor_pct > 0.0:
+        print(
+            f"[2/6] LLC-miss gate: require >{cfg.llc_miss_floor_pct}% "
+            f"(per_worker_buffer_mb={cfg.per_worker_buffer_mb})"
+        )
         miss_rate = _llc_miss_rate(binary, cfg, project_dir)
         if miss_rate < cfg.llc_miss_floor_pct:
             print(
@@ -250,12 +259,16 @@ def run_reference_capture(
                 f"this box's LLC. Increase it in collection.yaml and re-capture."
             )
             return 2
+        print(f"[2/6] LLC-miss rate {miss_rate:.1f}% >= {cfg.llc_miss_floor_pct}% OK")
+    else:
+        print("[2/6] LLC-miss gate: skipped (scenario does not set a floor)")
 
     launch = [
         *numactl_taskset_prefix(cfg.cpu_mask, cfg.numa_node),
         binary,
         str(cfg_path),
     ]
+    print(f"[3/6] launch: {' '.join(launch)}")
     perf_rec = subprocess.Popen(
         [
             "perf",
@@ -273,12 +286,18 @@ def run_reference_capture(
         text=True,
     )
 
+    print(f"[4/6] wait for steady-state marker {_MARKER!r} (warmup+30s budget)")
     if not _wait_for_marker(perf_rec, cfg.warmup_seconds + 30):
         print("ERROR: binary did not print the measurement marker in time.")
         perf_rec.kill()
         return 1
+    print("[4/6] marker seen -> start topdown collection")
 
     td_path = out_dir / "topdown.txt"
+    print(
+        f"[5/6] collect_topdown duration={cfg.measurement_seconds}s "
+        f"interval={cfg.interval_seconds}s pid={perf_rec.pid}"
+    )
     coll = metrics.collect_topdown(  # type: ignore[attr-defined]
         td_path,
         duration=cfg.measurement_seconds,
@@ -294,20 +313,39 @@ def run_reference_capture(
     except subprocess.TimeoutExpired:
         perf_rec.kill()
 
+    print(f"[5/6] parse topdown -> {out_dir / 'topdown.json'}")
     profile = metrics.parse_topdown_file(pathlib.Path(coll.topdown_path))  # type: ignore[attr-defined]
     (out_dir / "topdown.json").write_text(profile.model_dump_json(indent=2))
 
-    # Flamegraph (non-fatal — any failure is silently ignored).
-    import contextlib
+    # Flamegraph (non-fatal): perf script | stackcollapse-perf.pl | flamegraph.pl.
+    # Mirrors the operator's proven pipeline; both scripts live in flamegraph_dir
+    # (Brendan Gregg's FlameGraph repo). Missing scripts -> NOTE, not a silent skip.
+    print(f"[6/6] flamegraph (dir={flamegraph_dir!r})")
+    if flamegraph_dir is not None:
+        import contextlib
 
-    with contextlib.suppress(Exception):
-        subprocess.run(
-            f"perf script -i {out_dir / 'perf.data'} | "
-            f"flamegraph.pl > {out_dir / 'flamegraph.svg'}",
-            shell=True,
-            check=False,
-            timeout=120,
-        )
+        collapse = pathlib.Path(flamegraph_dir) / "stackcollapse-perf.pl"
+        flame = pathlib.Path(flamegraph_dir) / "flamegraph.pl"
+        if collapse.is_file() and flame.is_file():
+            with contextlib.suppress(Exception):
+                subprocess.run(
+                    f"perf script -i {out_dir / 'perf.data'} | "
+                    f"{collapse} | {flame} "
+                    f"--title='mirage reference profile' "
+                    f"> {out_dir / 'flamegraph.svg'}",
+                    shell=True,
+                    check=False,
+                    timeout=120,
+                )
+            if (out_dir / "flamegraph.svg").is_file():
+                print(f"[6/6] wrote {out_dir / 'flamegraph.svg'}")
+            else:
+                print("NOTE: flamegraph scripts ran but no .svg produced (perf.data empty?)")
+        else:
+            print(
+                f"NOTE: skipping flamegraph — {collapse} / {flame} not found. "
+                f"Clone https://github.com/brendangregg/FlameGraph and pass --flamegraph-dir."
+            )
 
     td = profile.topdown
     if td is not None:

@@ -23,11 +23,18 @@ def main() -> int:
     ap.add_argument("--binary", required=True)
     ap.add_argument("--out-dir", default=str(_HERE))
     ap.add_argument("--devkit-cmd", default=None)
+    ap.add_argument(
+        "--flamegraph-dir",
+        default="FlameGraph",
+        help="dir holding stackcollapse-perf.pl + flamegraph.pl "
+        "(https://github.com/brendangregg/FlameGraph). 'none' to skip.",
+    )
     args = ap.parse_args()
     return collect_common.run_reference_capture(  # type: ignore[no-any-return]
         binary=args.binary,
         scenario_dir=pathlib.Path(args.out_dir),
         devkit_cmd=args.devkit_cmd,
+        flamegraph_dir=None if args.flamegraph_dir.lower() == "none" else args.flamegraph_dir,
     )
 
 
