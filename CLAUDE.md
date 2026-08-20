@@ -161,7 +161,7 @@ Jinja2 templates are the codegen output surface — `main/main.cpp.j2` (time-box
 - **Branch first.** Never commit directly to `main` (pre-commit `no-commit-to-branch` enforces it); cut a feature branch (`feat/...`, `fix/...`, `rfc/...`, `docs/...`).
 - **Relevant files only.** `git add` only the files relevant to the change — never `git add -A` with unrelated churn. **Never commit `docs/superpowers/*`** (plans/specs are local working docs).
 - **Pre-commit before commit.** Run `pre-commit run --files <files>` (or `--all-files`) on the staged set; fix ruff/mypy failures before committing.
-- **No Claude attribution.** Do not add `Co-Authored-By: Claude` or similar trailers.
+- **No Claude attribution.** Do not add `Co-Authored-By: Claude` or similar trailers to commits. **PR and issue descriptions must also be free of Claude attribution** — no `Generated with Claude Code` footer, no "🤖" markers, no "Claude suggests…". The PR/issue body reads as the author's own words.
 - **Conventional Commit prefixes:** `feat:`, `fix:`, `refactor:`, `docs:`, `ci:`, `chore:`.
 - **Secret scrubbing.** Never commit real API keys / gateway tokens — leave placeholders. Private `192.168.x.x` addresses are OK; scrub public IPs.
 - **Scope rule (user-enforced):** LLM-provider fixes (`src/agent/llm_client.py`, `AgentConfig`, env wiring) MUST be separate PRs off `main` — never committed on an example/demo branch.
