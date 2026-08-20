@@ -1,0 +1,10 @@
+# Shared collection parameters for the compute_bound scenario.
+duration_seconds: 20
+interval_seconds: 3
+perf_freq: 99
+cpu_mask: "0-63"
+numa_node: "0"
+per_worker_buffer_mb: 8      # compute-bound; small buffer, the work is the matmul
+warmup_seconds: 5
+measurement_seconds: 20
+llc_miss_floor_pct: 0.0     # no LLC gate for compute_bound
