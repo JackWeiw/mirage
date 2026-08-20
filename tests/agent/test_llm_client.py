@@ -48,6 +48,7 @@ def _install_fake_openai(
     *,
     finish_reason: str = "length",
     content: str | None = '{"ok": 2}',
+    reasoning_content: str | None = None,
 ) -> None:
     fake: Any = types.ModuleType("openai")
 
@@ -56,11 +57,15 @@ def _install_fake_openai(
             captured.update(kwargs)
             self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
 
-        def _create(self, **_kwargs: Any) -> Any:
+        def _create(self, **kwargs: Any) -> Any:
+            captured["call_kwargs"] = kwargs
             return SimpleNamespace(
                 choices=[
                     SimpleNamespace(
-                        message=SimpleNamespace(content=content),
+                        message=SimpleNamespace(
+                            content=content,
+                            reasoning_content=reasoning_content,
+                        ),
                         finish_reason=finish_reason,
                     )
                 ],
@@ -194,11 +199,47 @@ def test_anthropic_complete_raises_on_none_content(
 def test_openai_complete_raises_on_none_content(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # A tool-call / content-filter refusal (message.content is None) must raise.
-    _install_fake_openai(monkeypatch, {}, finish_reason="stop", content=None)
+    # A tool-call / content-filter refusal (message.content is None AND no
+    # reasoning_content) must raise, not return "None".
+    _install_fake_openai(
+        monkeypatch, {}, finish_reason="stop", content=None, reasoning_content=None
+    )
     client = OpenAIClient(AgentConfig(api_key="k", provider="openai"))
     with pytest.raises(RuntimeError, match="no text content"):
         client.complete("prompt")
+
+
+def test_openai_reasoning_model_falls_back_to_reasoning_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Reasoning models (GLM-4.x / deepseek-r1 / o1-style) return content=None and
+    # put the answer in reasoning_content. The client must fall back to it.
+    _install_fake_openai(
+        monkeypatch,
+        {},
+        finish_reason="stop",
+        content=None,
+        reasoning_content='{"revised": "config"}',
+    )
+    client = OpenAIClient(AgentConfig(api_key="k", provider="openai"))
+    text, stop = client.complete("prompt")
+    assert text == '{"revised": "config"}'
+    assert stop == "end_turn"
+
+
+def test_openai_uses_max_tokens_not_max_completion_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # OpenAI-compatible gateways (vLLM/GLM) honor max_tokens and silently ignore
+    # max_completion_tokens, so the call must send max_tokens (not the newer
+    # max_completion_tokens), or the model runs at the gateway's default budget.
+    captured: dict[str, Any] = {}
+    _install_fake_openai(monkeypatch, captured, finish_reason="stop", content="ok")
+    cfg = AgentConfig(api_key="k", provider="openai", max_tokens=4096)
+    OpenAIClient(cfg).complete("prompt")
+    call = captured.get("call_kwargs", {})
+    assert call.get("max_tokens") == 4096
+    assert "max_completion_tokens" not in call
 
 
 def test_openai_transient_exceptions_non_empty(
