@@ -270,3 +270,77 @@ def test_serialize_recent_history_omits_build_fields_when_no_failure() -> None:
     serialized = _serialize_recent_history(history)
     assert "build_failed" not in serialized
     assert "build_stderr" not in serialized
+
+
+# -- revise_instruction: knob-domain injection ------------------------------
+
+
+def test_render_knob_domains_lists_enum_and_numeric() -> None:
+    from agent.agent_core import _render_knob_domains
+
+    text = _render_knob_domains()
+    assert "archetype" in text
+    assert "matmul" in text  # an enum value
+    assert "compute_ratio" in text  # a runtime numeric knob domain
+    assert "working_set_mb" in text
+
+
+def test_revise_instruction_injects_knob_domains(monkeypatch: Any) -> None:
+    """The rendered revise prompt contains the knob domains and no leftover
+    {knob_domains} placeholder."""
+    agent = AgentCore(config=AgentConfig(api_key=None))
+    captured: list[str] = []
+
+    def fake_call_llm_json(prompt: str) -> dict[str, Any]:
+        captured.append(prompt)
+        return {"revised_instruction": {}, "adjustments": []}
+
+    monkeypatch.setattr(agent, "_call_llm_json", fake_call_llm_json)
+    agent.revise_instruction(
+        prior_instruction={"stages": []},
+        report={},
+        sensitivity={},
+        history=_FakeHistory(records=[]),
+    )
+    prompt = captured[0]
+    assert "{knob_domains}" not in prompt
+    assert "archetype" in prompt
+    assert "matmul" in prompt
+
+
+# -- max_tokens hardening: warn on the 4096 default for reasoning models ------
+
+
+class _CoreLogSpy:
+    """Records structlog info/warning calls (PrintLoggerFactory -> caplog misses)."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict[str, Any]]] = []
+
+    def info(self, event: str | None = None, **kw: Any) -> None:
+        self.events.append((event or "", kw))
+
+    def warning(self, event: str | None = None, **kw: Any) -> None:
+        self.events.append((event or "", kw))
+
+
+def test_init_warns_max_tokens_at_default_for_reasoning_model(monkeypatch: Any) -> None:
+    spy = _CoreLogSpy()
+    monkeypatch.setattr("agent.agent_core.logger", spy)
+    AgentCore(config=AgentConfig(model="glm-4.7", max_tokens=4096, api_key=None))
+    assert any(e == "max_tokens_at_default_for_reasoning_model" for e, _ in spy.events)
+
+
+def test_init_no_warning_when_max_tokens_raised(monkeypatch: Any) -> None:
+    spy = _CoreLogSpy()
+    monkeypatch.setattr("agent.agent_core.logger", spy)
+    AgentCore(config=AgentConfig(model="glm-4.7", max_tokens=16384, api_key=None))
+    assert not any(e == "max_tokens_at_default_for_reasoning_model" for e, _ in spy.events)
+
+
+def test_init_no_warning_for_non_reasoning_model(monkeypatch: Any) -> None:
+    # claude-sonnet-5 at the 4096 default is not a reasoning model -> no warning.
+    spy = _CoreLogSpy()
+    monkeypatch.setattr("agent.agent_core.logger", spy)
+    AgentCore(config=AgentConfig(model="claude-sonnet-5", max_tokens=4096, api_key=None))
+    assert not any(e == "max_tokens_at_default_for_reasoning_model" for e, _ in spy.events)

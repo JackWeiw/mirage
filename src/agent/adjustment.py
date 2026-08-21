@@ -32,6 +32,29 @@ RUNTIME_KNOBS: dict[str, dict[str, Any]] = {
 KNOB_DOMAINS: dict[str, dict[str, Any]] = {**STRUCTURAL_KNOBS, **RUNTIME_KNOBS}
 
 
+def _canonicalize_enum(knob: str, value: Any) -> Any:
+    """Return the canonical enum value for ``knob``, or ``value`` unchanged.
+
+    Matches case-insensitively and after stripping whitespace so an LLM-emitted
+    ``"MatMul"`` / ``" hash "`` is accepted and stored as the canonical form the
+    codegen template branches on (``archetype == 'matmul'``). A value matching
+    no domain entry is returned unchanged so ``_validate_value`` rejects it as a
+    domain violation. Numeric/unknown knobs are returned untouched.
+    """
+    dom = KNOB_DOMAINS.get(knob)
+    if not dom or dom.get("kind") != "enum":
+        return value
+    values = dom["values"]
+    if value in values:
+        return value
+    if isinstance(value, str):
+        needle = value.strip().lower()
+        for v in values:
+            if isinstance(v, str) and v.lower() == needle:
+                return v
+    return value
+
+
 def _validate_value(knob: str, to: Any) -> None:
     """Raise ValueError if `to` is outside the knob's valid domain."""
     if knob not in KNOB_DOMAINS:
@@ -63,9 +86,10 @@ def apply_adjustments(
     out = deepcopy(instruction)
     for adj in adjustments:
         knob = adj["knob"]
-        _validate_value(knob, adj["to"])
+        to = _canonicalize_enum(knob, adj["to"])
+        _validate_value(knob, to)
         if knob in RUNTIME_KNOBS:
-            out.setdefault("config", {})[knob] = adj["to"]
+            out.setdefault("config", {})[knob] = to
         else:
             stage_name = adj.get("stage", "")
             stage = next(
@@ -73,7 +97,7 @@ def apply_adjustments(
             )
             if stage is None:
                 raise ValueError(f"unknown stage: {stage_name!r}")
-            stage["strategies"][0]["synthesis_config"][knob] = adj["to"]
+            stage["strategies"][0]["synthesis_config"][knob] = to
     return out
 
 
@@ -160,12 +184,13 @@ def validate_adjustments(
 
     for adj in adjustments:
         knob = adj["knob"]
+        to = _canonicalize_enum(knob, adj["to"])
         # Domain.
         if knob not in KNOB_DOMAINS:
             rejected.append({**adj, "reason": "unknown_knob"})
             continue
         try:
-            _validate_value(knob, adj["to"])
+            _validate_value(knob, to)
         except ValueError as exc:
             rejected.append({**adj, "reason": f"domain_violation:{exc}"})
             continue
@@ -181,7 +206,6 @@ def validate_adjustments(
 
         # Direction (decoupled from largest error): uses ACTUAL current, not from.
         actual = _actual_current(instruction, adj)
-        to = adj["to"]
         entry = sensitivity.get(knob, {})
         metric = adj.get("expected_metric") or entry.get("target_metric")
         direction = adj.get("expected_direction") or entry.get("expected_direction")
@@ -194,45 +218,75 @@ def validate_adjustments(
             rejected.append({**adj, "reason": "metric_already_satisfied"})
             continue
 
-        # The sign-based direction check applies only to numeric knobs. A missing
-        # actual (knob absent from the instruction), a non-numeric actual (enum
-        # knobs like archetype/access_pattern whose direction cannot be sign-
-        # verified), and a no-op (to == actual) each get a distinct reason so an
-        # operator can triage rather than chase a phantom wrong-direction. Full
-        # enum direction verification (per-value metric comparison from the spike
-        # data) is deferred to the LLM structural tier.
         if actual is None:
             rejected.append({**adj, "reason": "missing_actual"})
             continue
-        if not isinstance(to, int | float) or not isinstance(actual, int | float):
-            rejected.append({**adj, "reason": "non_numeric_knob_direction_uncheckable"})
-            continue
 
-        # Want to move metric DOWN (err=+1, too high) or UP (err=-1, too low).
-        want_down = err > 0
-        # direction "up" means knob raises metric; "down" means lowers it.
-        knob_raises = direction == "up"
-        # Required knob move sign to reduce error:
-        #   want metric down + knob raises -> decrease knob (to<actual)
-        #   want metric down + knob lowers  -> increase knob
-        #   want metric up   + knob raises -> increase knob
-        #   want metric up   + knob lowers  -> decrease knob
-        want_increase = want_down != knob_raises  # XOR
-        move_sign = to - actual
-        if move_sign == 0:
-            rejected.append({**adj, "reason": "no_op_move"})
-            continue
-        move_up = move_sign > 0
-        if (want_increase and not move_up) or (not want_increase and move_up):
-            rejected.append({**adj, "reason": "wrong_direction"})
-            continue
+        is_enum = knob in STRUCTURAL_KNOBS and STRUCTURAL_KNOBS[knob].get("kind") == "enum"
+        if is_enum:
+            values = entry.get("values") or []
+            mvalues = entry.get("metric_values") or []
+            if (
+                values
+                and mvalues
+                and len(values) == len(mvalues)
+                and actual in values
+                and to in values
+            ):
+                # Verify direction from spike data: the move must reduce error.
+                ia, it = values.index(actual), values.index(to)
+                want_down = err > 0  # metric too high -> reduce
+                improved = (mvalues[it] < mvalues[ia]) if want_down else (mvalues[it] > mvalues[ia])
+                if not improved:
+                    rejected.append({**adj, "reason": "wrong_direction"})
+                    continue
+                # else fall through to accept
+            else:
+                # No usable spike data (e.g. archetype, iterations). The LLM
+                # structural tier is the designated owner of un-instrumented
+                # structural revision; the closed loop's observed_effects +
+                # oscillation + no_improvement guards bound a bad move's risk.
+                td = report.get("topdown_l1", {}).get(metric, {})
+                logger.info(
+                    "structural_enum_trusted",
+                    knob=knob,
+                    actual=actual,
+                    to=to,
+                    metric=metric,
+                    workload=td.get("workload"),
+                    customer=td.get("customer"),
+                    diff_pct=td.get("diff_pct"),
+                    err=err,
+                )
+                # fall through to accept
+        else:
+            # Numeric knob: sign-based direction check.
+            # Want to move metric DOWN (err=+1, too high) or UP (err=-1, too low).
+            want_down = err > 0
+            # direction "up" means knob raises metric; "down" means lowers it.
+            knob_raises = direction == "up"
+            # Required knob move sign to reduce error:
+            #   want metric down + knob raises -> decrease knob (to<actual)
+            #   want metric down + knob lowers  -> increase knob
+            #   want metric up   + knob raises -> increase knob
+            #   want metric up   + knob lowers  -> decrease knob
+            want_increase = want_down != knob_raises  # XOR
+            move_sign = to - actual
+            if move_sign == 0:
+                rejected.append({**adj, "reason": "no_op_move"})
+                continue
+            move_up = move_sign > 0
+            if (want_increase and not move_up) or (not want_increase and move_up):
+                rejected.append({**adj, "reason": "wrong_direction"})
+                continue
 
         # from-mismatch: warn only.
-        if adj.get("from") is not None and adj["from"] != actual:
+        from_val = _canonicalize_enum(knob, adj["from"]) if adj.get("from") is not None else None
+        if from_val is not None and from_val != actual:
             logger.warning(
                 "adjustment_from_mismatch",
                 knob=knob,
-                from_=adj["from"],
+                from_=from_val,
                 actual=actual,
                 to=to,
             )

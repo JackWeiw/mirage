@@ -7,9 +7,11 @@ Agent is optional — Pipeline works in local-only mode without it.
 
 import json
 import pathlib
+import re
 import time
 from typing import Any, cast
 
+from agent.adjustment import KNOB_DOMAINS
 from agent.llm_client import LLMClient, make_client
 from config.framework_config import AgentConfig
 from observability.logging import get_logger
@@ -24,6 +26,10 @@ _BACKOFF_BASE_SECONDS = 1.0
 
 # How many recent records' adjustments/effects to surface in the revise prompt.
 _RECENT_HISTORY_N = 5
+
+# Reasoning models burn thousands of tokens on chain-of-thought before the JSON
+# answer; the 4096 default truncates them mid-thought (#67).
+_REASONING_MODEL_RE = re.compile(r"\b(glm-4|deepseek-r1|qwen3|qwq|o1|o3|o4)\b")
 
 
 def _serialize_recent_history(history: Any) -> str:
@@ -51,6 +57,22 @@ def _serialize_recent_history(history: Any) -> str:
             rec["build_stderr"] = build_stderr
         recs.append(rec)
     return json.dumps(recs)
+
+
+def _render_knob_domains() -> str:
+    """Render KNOB_DOMAINS as a human-readable list for the revise prompt.
+
+    Single source of truth: KNOB_DOMAINS is the dynamic merge of
+    STRUCTURAL_KNOBS + RUNTIME_KNOBS, so the gate's _validate_value and this
+    prompt never drift.
+    """
+    lines: list[str] = []
+    for knob, dom in KNOB_DOMAINS.items():
+        if dom["kind"] == "enum":
+            lines.append(f"- {knob}: one of {list(dom['values'])}")
+        else:
+            lines.append(f"- {knob}: {dom['kind']} in [{dom['min']}, {dom['max']}]")
+    return "\n".join(lines)
 
 
 class LLMError(RuntimeError):
@@ -81,6 +103,16 @@ class AgentCore:
         self.config = config or AgentConfig()
         self.model = self.config.model
         self.max_tokens = self.config.max_tokens
+        # Reasoning models (GLM-4.x, deepseek-r1, o-series, qwen3) emit a long
+        # chain-of-thought before the final JSON answer; the 4096 default
+        # truncates that mid-thought -> LLMTruncationError (#67). Warn at startup
+        # so the silent 4096 trap surfaces instead of failing the first call.
+        if self.max_tokens <= 4096 and _REASONING_MODEL_RE.search(self.model.lower()):
+            logger.warning(
+                "max_tokens_at_default_for_reasoning_model",
+                max_tokens=self.max_tokens,
+                model=self.model,
+            )
         self._client: LLMClient | None = None
         if self.config.api_key is not None:
             self._client = make_client(self.config)
@@ -92,7 +124,7 @@ class AgentCore:
     def _load_prompt(self, name: str) -> str:
         """Load a prompt template from the prompts directory."""
         filepath = PROMPTS_DIR / name
-        return filepath.read_text()
+        return filepath.read_text(encoding="utf-8")
 
     def _transient_exceptions(self) -> tuple[type[Exception], ...]:
         """Exception classes worth retrying (rate limit, 5xx, connection).
@@ -249,6 +281,7 @@ class AgentCore:
             .replace("{report}", json.dumps(report))
             .replace("{sensitivity}", json.dumps(sensitivity))
             .replace("{recent_history}", _serialize_recent_history(history))
+            .replace("{knob_domains}", _render_knob_domains())
         )
         resp = self._call_llm_json(prompt)
         revised = resp.get("revised_instruction")
