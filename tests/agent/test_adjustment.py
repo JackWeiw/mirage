@@ -692,10 +692,29 @@ def test_validate_missing_actual_rejected() -> None:
     assert rejected[0]["reason"] == "missing_actual"
 
 
-def test_validate_non_numeric_knob_rejected() -> None:
-    # archetype is an enum knob (string values). Its actual is "hash" — non-numeric —
-    # so the sign-based direction check cannot run. Must get a distinct reason,
-    # not the misleading "wrong_direction".
+class _LogSpy:
+    """Records structlog-style info/warning calls (structlog prints to stdout,
+    so pytest caplog cannot capture it; monkeypatch the module logger instead)."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict[str, Any]]] = []
+
+    def _record(self, event: str | None, kw: dict[str, Any]) -> None:
+        self.events.append((event or "", kw))
+
+    def info(self, event: str | None = None, **kw: Any) -> None:
+        self._record(event, kw)
+
+    def warning(self, event: str | None = None, **kw: Any) -> None:
+        self._record(event, kw)
+
+
+def test_validate_enum_no_spike_data_trusted_on_structural(monkeypatch: Any) -> None:
+    # archetype has no sensitivity entry, but the adj declares an unsatisfied
+    # target metric (retiring too low -> want up). The LLM structural tier is
+    # the designated owner of un-instrumented structural revision -> trust it.
+    spy = _LogSpy()
+    monkeypatch.setattr("agent.adjustment.logger", spy)
     instr = {
         "stages": [
             {
@@ -720,11 +739,103 @@ def test_validate_non_numeric_knob_rejected() -> None:
         ],
         instr,
         _report(retiring_diff=-15.0),
-        _SENS,
+        _SENS,  # archetype absent -> no spike data
+        tier="structural",
+    )
+    assert len(accepted) == 1
+    assert rejected == []
+    assert spy.events, "expected a structural_enum_trusted log event"
+    assert spy.events[0][0] == "structural_enum_trusted"
+    fields = spy.events[0][1]
+    assert fields["knob"] == "archetype"
+    assert fields["actual"] == "hash"
+    assert fields["to"] == "matmul"
+    assert fields["metric"] == "retiring"
+
+
+def test_validate_enum_with_spike_data_correct_direction_accepted() -> None:
+    # access_pattern targets backend_bound (up): [sequential,mixed,random] -> [30,50,70].
+    # backend too high (+20, want down) -> moving random->sequential reduces it -> accept.
+    instr = {
+        "stages": [
+            {
+                "stage_name": "mem",
+                "strategies": [{"synthesis_config": {"access_pattern": "random"}}],
+            }
+        ]
+    }
+    sens = {
+        "access_pattern": {
+            "target_metric": "backend_bound",
+            "expected_direction": "up",
+            "verdict": "controllable",
+            "values": ["sequential", "mixed", "random"],
+            "metric_values": [30.0, 50.0, 70.0],
+        }
+    }
+    from agent.adjustment import validate_adjustments
+
+    accepted, rejected = validate_adjustments(
+        [
+            {
+                "stage": "mem",
+                "knob": "access_pattern",
+                "from": "random",
+                "to": "sequential",
+                "rationale": "",
+                "expected_metric": "backend_bound",
+                "expected_direction": "up",
+            }
+        ],
+        instr,
+        _report(backend_diff=20.0),
+        sens,
+        tier="structural",
+    )
+    assert len(accepted) == 1
+    assert rejected == []
+
+
+def test_validate_enum_with_spike_data_wrong_direction_rejected() -> None:
+    # Same setup, but moving sequential->random INCREASES backend (wrong direction).
+    instr = {
+        "stages": [
+            {
+                "stage_name": "mem",
+                "strategies": [{"synthesis_config": {"access_pattern": "sequential"}}],
+            }
+        ]
+    }
+    sens = {
+        "access_pattern": {
+            "target_metric": "backend_bound",
+            "expected_direction": "up",
+            "verdict": "controllable",
+            "values": ["sequential", "mixed", "random"],
+            "metric_values": [30.0, 50.0, 70.0],
+        }
+    }
+    from agent.adjustment import validate_adjustments
+
+    accepted, rejected = validate_adjustments(
+        [
+            {
+                "stage": "mem",
+                "knob": "access_pattern",
+                "from": "sequential",
+                "to": "random",
+                "rationale": "",
+                "expected_metric": "backend_bound",
+                "expected_direction": "up",
+            }
+        ],
+        instr,
+        _report(backend_diff=20.0),
+        sens,
         tier="structural",
     )
     assert accepted == []
-    assert rejected[0]["reason"] == "non_numeric_knob_direction_uncheckable"
+    assert rejected[0]["reason"] == "wrong_direction"
 
 
 def test_validate_no_op_move_rejected() -> None:
@@ -958,3 +1069,153 @@ def test_canonicalize_leaves_numeric_knob_untouched() -> None:
 
     assert _canonicalize_enum("working_set_mb", 256) == 256
     assert _canonicalize_enum("compute_ratio", 0.8) == 0.8
+
+
+def test_validate_enum_trusted_when_values_metric_values_length_mismatch() -> None:
+    # values has 3 entries, metric_values has 2 -> cannot index safely -> trust.
+    instr = {
+        "stages": [
+            {"stage_name": "m", "strategies": [{"synthesis_config": {"access_pattern": "mixed"}}]}
+        ]
+    }
+    sens = {
+        "access_pattern": {
+            "target_metric": "backend_bound",
+            "expected_direction": "up",
+            "verdict": "controllable",
+            "values": ["sequential", "mixed", "random"],
+            "metric_values": [30.0, 50.0],  # length mismatch
+        }
+    }
+    from agent.adjustment import validate_adjustments
+
+    accepted, _ = validate_adjustments(
+        [
+            {
+                "stage": "m",
+                "knob": "access_pattern",
+                "from": "mixed",
+                "to": "sequential",
+                "rationale": "",
+                "expected_metric": "backend_bound",
+                "expected_direction": "up",
+            }
+        ],
+        instr,
+        _report(backend_diff=20.0),
+        sens,
+        tier="structural",
+    )
+    assert len(accepted) == 1
+
+
+def test_validate_enum_trusted_when_values_empty() -> None:
+    instr = {
+        "stages": [
+            {"stage_name": "m", "strategies": [{"synthesis_config": {"access_pattern": "mixed"}}]}
+        ]
+    }
+    sens = {
+        "access_pattern": {
+            "target_metric": "backend_bound",
+            "expected_direction": "up",
+            "verdict": "controllable",
+        }
+    }
+    from agent.adjustment import validate_adjustments
+
+    accepted, _ = validate_adjustments(
+        [
+            {
+                "stage": "m",
+                "knob": "access_pattern",
+                "from": "mixed",
+                "to": "sequential",
+                "rationale": "",
+                "expected_metric": "backend_bound",
+                "expected_direction": "up",
+            }
+        ],
+        instr,
+        _report(backend_diff=20.0),
+        sens,
+        tier="structural",
+    )
+    assert len(accepted) == 1
+
+
+def test_validate_enum_trusted_when_actual_not_in_values() -> None:
+    # actual ("weird") not in spike values, to ("sequential") is -> cannot compare -> trust.
+    instr = {
+        "stages": [
+            {"stage_name": "m", "strategies": [{"synthesis_config": {"access_pattern": "weird"}}]}
+        ]
+    }
+    sens = {
+        "access_pattern": {
+            "target_metric": "backend_bound",
+            "expected_direction": "up",
+            "verdict": "controllable",
+            "values": ["sequential", "mixed", "random"],
+            "metric_values": [30.0, 50.0, 70.0],
+        }
+    }
+    from agent.adjustment import validate_adjustments
+
+    accepted, _ = validate_adjustments(
+        [
+            {
+                "stage": "m",
+                "knob": "access_pattern",
+                "from": "weird",
+                "to": "sequential",
+                "rationale": "",
+                "expected_metric": "backend_bound",
+                "expected_direction": "up",
+            }
+        ],
+        instr,
+        _report(backend_diff=20.0),
+        sens,
+        tier="structural",
+    )
+    assert len(accepted) == 1
+
+
+def test_validate_enum_trusted_when_to_not_in_values() -> None:
+    instr = {
+        "stages": [
+            {"stage_name": "m", "strategies": [{"synthesis_config": {"access_pattern": "mixed"}}]}
+        ]
+    }
+    sens = {
+        "access_pattern": {
+            "target_metric": "backend_bound",
+            "expected_direction": "up",
+            "verdict": "controllable",
+            "values": ["sequential", "mixed", "random"],
+            "metric_values": [30.0, 50.0, 70.0],
+        }
+    }
+    from agent.adjustment import validate_adjustments
+
+    accepted, _ = validate_adjustments(
+        [
+            {
+                "stage": "m",
+                "knob": "access_pattern",
+                "from": "mixed",
+                "to": "weird",
+                "rationale": "",
+                "expected_metric": "backend_bound",
+                "expected_direction": "up",
+            }
+        ],
+        instr,
+        _report(backend_diff=20.0),
+        sens,
+        tier="structural",
+    )
+    # 'weird' is not a valid enum -> domain_violation at the domain check, NOT trusted.
+    # (Documents that the trust path is only reached for in-domain enum values.)
+    assert accepted == []
