@@ -149,3 +149,47 @@ def test_parse_text_summary_meaned_across_blocks() -> None:
     assert result.summary.instructions == 50_000_000_000
     # mean(0.45 ; 0.55) = 0.50
     assert abs(result.summary.ipc - 0.50) < 0.001
+
+
+def test_parse_text_tree_structure_and_mean() -> None:
+    parser = TopdownParser()
+    result = parser.parse_text(DATA_DIR / "sample_topdown_tree.txt")
+    assert result.topdown_tree is not None
+    # 4 L1 roots, in report order.
+    names = [n.name for n in result.topdown_tree]
+    assert names == ["Bad Speculation", "Frontend Bound", "Retiring", "Backend Bound"]
+    # L1 root values are meaned across the 2 blocks.
+    backend = result.topdown_tree[3]
+    assert abs(backend.value - 71.00) < 0.001  # mean(72.00, 70.00)
+    # Backend -> [Core Bound, Memory Bound], in order.
+    assert [c.name for c in backend.children] == ["Core Bound", "Memory Bound"]
+    core = backend.children[0]
+    assert abs(core.value - 32.00) < 0.001  # mean(33.00, 31.00)
+    # Core -> Exe Ports Util -> [0 ports non serialize, 1 ports].
+    exe = core.children[0]
+    assert exe.name == "Exe Ports Util"
+    assert [c.name for c in exe.children] == ["0 ports non serialize", "1 ports"]
+    assert abs(exe.children[0].value - 17.50) < 0.001  # mean(18.00, 17.00)
+    # Memory -> L3 Bound, meaned.
+    memory = backend.children[1]
+    l3 = next(c for c in memory.children if c.name == "L3 Bound")
+    assert abs(l3.value - 32.00) < 0.001  # mean(31.00, 33.00)
+
+
+def test_parse_text_tree_sampling_events() -> None:
+    parser = TopdownParser()
+    result = parser.parse_text(DATA_DIR / "sample_topdown_tree.txt")
+    assert result.topdown_tree is not None
+    backend = result.topdown_tree[3]
+    memory = backend.children[1]
+    mem_bound = next(c for c in memory.children if c.name == "Mem Bound")
+    assert mem_bound.sampling_event == "cache-misses"
+    # Category nodes have no sampling event.
+    assert backend.sampling_event is None
+    # Retiring carries inst_retired.
+    retiring = next(n for n in result.topdown_tree if n.name == "Retiring")
+    assert retiring.sampling_event == "inst_retired"
+    # Branch Mispredicts carries br_mis_pred.
+    bad_spec = result.topdown_tree[0]
+    branch = bad_spec.children[0]
+    assert branch.sampling_event == "br_mis_pred"

@@ -15,6 +15,7 @@ from profile.profile_schema import (
     TopdownL2BadSpec,
     TopdownL2Frontend,
     TopdownL2Retiring,
+    TopdownNode,
     TopdownSummary,
 )
 
@@ -68,6 +69,91 @@ def _mean_summaries(items: list[TopdownSummary]) -> TopdownSummary | None:
         instructions=round(sum(i.instructions for i in items) / n),
         ipc=sum(i.ipc for i in items) / n,
     )
+
+
+# The 4-char tree-prefix groups devkit uses for indentation/continuation. A
+# node's depth = (count of these groups) // 4; L1 category lines (no connector)
+# are depth-0 roots.
+_TREE_GROUPS = ("│   ", "    ", "├── ", "└── ")
+_TREE_VALUE_RE = re.compile(r"^\d+\.\d+$")
+
+
+def _parse_tree_line(line: str) -> tuple[int, TopdownNode] | None:
+    """Parse one devkit tree line into (depth, TopdownNode), or None if not a
+    tree node (dividers, header rows, raw-counter rows, elapsed-time line).
+
+    A line is a tree node iff, after the 4-char prefix, its tokens are at least
+    [name..., value, event] and the second-to-last token is a float (e.g.
+    "3.01"). The trailing token is the "Preferred Sampling Event" column
+    ("--" -> None). Old 4-column reports without the event column therefore do
+    not match (value would be the last token, event missing) -> tree is None.
+    """
+    # Strip devkit's 2-space table margin; the remaining prefix is a run of
+    # 4-char tree groups (vertical/continuation/connector).
+    rest = line[2:] if line.startswith("  ") else line
+    prefix_len = 0
+    while rest[prefix_len : prefix_len + 4] in _TREE_GROUPS:
+        prefix_len += 4
+    depth = prefix_len // 4
+    tokens = rest[prefix_len:].split()
+    if len(tokens) < 3:
+        return None
+    value_str = tokens[-2]
+    if not _TREE_VALUE_RE.match(value_str):
+        return None
+    event_str = tokens[-1]
+    name = " ".join(tokens[:-2])
+    if not name:
+        return None
+    return depth, TopdownNode(
+        name=name,
+        value=float(value_str),
+        children=[],
+        sampling_event=None if event_str == "--" else event_str,
+    )
+
+
+def _parse_tree_block(block: str) -> list[TopdownNode]:
+    """Parse one interval block into a forest of L1-root TopdownNodes."""
+    roots: list[TopdownNode] = []
+    stack: list[tuple[int, TopdownNode]] = []
+    for line in block.splitlines():
+        parsed = _parse_tree_line(line)
+        if parsed is None:
+            continue
+        depth, node = parsed
+        while stack and stack[-1][0] >= depth:
+            stack.pop()
+        if not stack:
+            roots.append(node)
+        else:
+            stack[-1][1].children.append(node)
+        stack.append((depth, node))
+    return roots
+
+
+def _merge_forests(forests: list[list[TopdownNode]]) -> list[TopdownNode]:
+    """Mean node values across interval blocks by full name-path; sampling_event
+    is constant per path (take the first non-None)."""
+    if not forests:
+        return []
+    by_name: dict[str, list[TopdownNode]] = {}
+    order: list[str] = []
+    for forest in forests:
+        for node in forest:
+            if node.name not in by_name:
+                by_name[node.name] = []
+                order.append(node.name)
+            by_name[node.name].append(node)
+    merged: list[TopdownNode] = []
+    for name in order:
+        nodes = by_name[name]
+        value = sum(n.value for n in nodes) / len(nodes)
+        event = next((n.sampling_event for n in nodes if n.sampling_event is not None), None)
+        child_forests = [n.children for n in nodes if n.children]
+        children = _merge_forests(child_forests) if child_forests else []
+        merged.append(TopdownNode(name=name, value=value, children=children, sampling_event=event))
+    return merged
 
 
 class TopdownParser:
@@ -207,7 +293,7 @@ class TopdownParser:
         """
         if not filepath.exists():
             raise FileNotFoundError(f"Topdown text file not found: {filepath}")
-        text = filepath.read_text(errors="replace")
+        text = filepath.read_text(encoding="utf-8", errors="replace")
         matches = _TOPDOWN_L1_RE.findall(text)
         if not matches:
             raise ValueError(
@@ -230,11 +316,13 @@ class TopdownParser:
         blocks = _split_blocks(text)
         summaries = [s for s in (_parse_summary_block(b) for b in blocks) if s]
         summary = _mean_summaries(summaries)
+        forests = [f for f in (_parse_tree_block(b) for b in blocks) if f]
+        topdown_tree = _merge_forests(forests) if forests else None
         return Profile(
             metadata=ProfileMetadata(customer="devkit", date="unknown"),
             topdown=topdown_l1,
             topdown_l2=None,
             memory=None,
             summary=summary,
-            topdown_tree=None,
+            topdown_tree=topdown_tree,
         )
