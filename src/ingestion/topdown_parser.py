@@ -15,6 +15,7 @@ from profile.profile_schema import (
     TopdownL2BadSpec,
     TopdownL2Frontend,
     TopdownL2Retiring,
+    TopdownSummary,
 )
 
 # devkit `tuner top-down` emits a human-readable TEXT table, e.g.:
@@ -27,6 +28,46 @@ _TOPDOWN_L1_RE = re.compile(
     r"^\s*(backend bound|frontend bound|bad speculation|retiring)\s+([\d.]+)",
     re.IGNORECASE | re.MULTILINE,
 )
+
+# A new interval block begins at each "TOP-DOWN Summary Report" banner. The L1
+# mean above already handles multi-block values by label; the tree and summary
+# counters are positional within a block, so they need real block splitting.
+_BLOCK_HEADER_RE = re.compile(r"TOP-DOWN Summary Report", re.IGNORECASE)
+
+# Per-block raw counters (thousands-separated). A block missing any of the
+# three yields no summary record (best-effort, like the tree below).
+_CYCLES_RE = re.compile(r"^\s*Cycles\s+([\d,]+)\s*$", re.MULTILINE)
+_INSTRUCTIONS_RE = re.compile(r"^\s*Instructions\s+([\d,]+)\s*$", re.MULTILINE)
+_IPC_RE = re.compile(r"^\s*IPC\s+([\d.]+)\s*$", re.MULTILINE)
+
+
+def _split_blocks(text: str) -> list[str]:
+    """Split a devkit text report into per-interval block bodies."""
+    return [b for b in _BLOCK_HEADER_RE.split(text) if b.strip()]
+
+
+def _parse_summary_block(block: str) -> TopdownSummary | None:
+    cyc = _CYCLES_RE.search(block)
+    ins = _INSTRUCTIONS_RE.search(block)
+    ipc = _IPC_RE.search(block)
+    if not (cyc and ins and ipc):
+        return None
+    return TopdownSummary(
+        cycles=int(cyc.group(1).replace(",", "")),
+        instructions=int(ins.group(1).replace(",", "")),
+        ipc=float(ipc.group(1)),
+    )
+
+
+def _mean_summaries(items: list[TopdownSummary]) -> TopdownSummary | None:
+    if not items:
+        return None
+    n = len(items)
+    return TopdownSummary(
+        cycles=round(sum(i.cycles for i in items) / n),
+        instructions=round(sum(i.instructions for i in items) / n),
+        ipc=sum(i.ipc for i in items) / n,
+    )
 
 
 class TopdownParser:
@@ -186,9 +227,14 @@ class TopdownParser:
             bad_speculation=found.get("bad speculation", 0.0),
             retiring=found.get("retiring", 0.0),
         )
+        blocks = _split_blocks(text)
+        summaries = [s for s in (_parse_summary_block(b) for b in blocks) if s]
+        summary = _mean_summaries(summaries)
         return Profile(
             metadata=ProfileMetadata(customer="devkit", date="unknown"),
             topdown=topdown_l1,
             topdown_l2=None,
             memory=None,
+            summary=summary,
+            topdown_tree=None,
         )

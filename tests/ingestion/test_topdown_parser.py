@@ -138,3 +138,14 @@ def test_parse_text_averages_multiple_interval_reports() -> None:
         assert result.topdown.retiring == 7.0
     finally:
         path.unlink()
+
+
+def test_parse_text_summary_meaned_across_blocks() -> None:
+    parser = TopdownParser()
+    result = parser.parse_text(DATA_DIR / "sample_topdown_tree.txt")
+    assert result.summary is not None
+    # mean(100,000,000,000 ; 120,000,000,000) = 110,000,000,000
+    assert result.summary.cycles == 110_000_000_000
+    assert result.summary.instructions == 50_000_000_000
+    # mean(0.45 ; 0.55) = 0.50
+    assert abs(result.summary.ipc - 0.50) < 0.001
