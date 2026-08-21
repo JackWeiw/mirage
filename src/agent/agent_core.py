@@ -11,7 +11,7 @@ import re
 import time
 from typing import Any, cast
 
-from agent.adjustment import KNOB_DOMAINS
+from agent.adjustment import STRUCTURAL_KNOBS
 from agent.llm_client import LLMClient, make_client
 from config.framework_config import AgentConfig
 from observability.logging import get_logger
@@ -60,14 +60,20 @@ def _serialize_recent_history(history: Any) -> str:
 
 
 def _render_knob_domains() -> str:
-    """Render KNOB_DOMAINS as a human-readable list for the revise prompt.
+    """Render STRUCTURAL_KNOB domains for the revise prompt.
 
-    Single source of truth: KNOB_DOMAINS is the dynamic merge of
-    STRUCTURAL_KNOBS + RUNTIME_KNOBS, so the gate's _validate_value and this
-    prompt never drift.
+    The revise_instruction prompt drives the STRUCTURAL tier only -- runtime
+    knobs are owned by the deterministic tier, so listing them here only tempts
+    the LLM into proposing runtime-knob moves the gate then rejects as
+    runtime_knob_not_owned_on_structural_tier. Restricting the rendered list to
+    structural knobs keeps the prompt honest about what this tier may touch.
+
+    Single source of truth: STRUCTURAL_KNOBS (the same dict the gate's
+    _validate_value and the codegen template's enum branches key off), so the
+    prompt never drifts from the values the gate accepts.
     """
     lines: list[str] = []
-    for knob, dom in KNOB_DOMAINS.items():
+    for knob, dom in STRUCTURAL_KNOBS.items():
         if dom["kind"] == "enum":
             lines.append(f"- {knob}: one of {list(dom['values'])}")
         else:
