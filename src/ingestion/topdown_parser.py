@@ -122,6 +122,9 @@ def _parse_tree_block(block: str) -> list[TopdownNode]:
         if parsed is None:
             continue
         depth, node = parsed
+        # Pop until the stack top is strictly shallower than this node — i.e.
+        # the parent. `>=` (not `>`) pops same-depth siblings so they attach
+        # to the shared parent instead of nesting under each other.
         while stack and stack[-1][0] >= depth:
             stack.pop()
         if not stack:
@@ -133,8 +136,14 @@ def _parse_tree_block(block: str) -> list[TopdownNode]:
 
 
 def _merge_forests(forests: list[list[TopdownNode]]) -> list[TopdownNode]:
-    """Mean node values across interval blocks by full name-path; sampling_event
-    is constant per path (take the first non-None)."""
+    """Mean node values across interval blocks, grouping siblings by name.
+
+    Recursion scopes each merge to one parent's child list, so grouping by
+    local node name (not a global ancestor path) is unambiguous.
+    `sampling_event` is constant per (parent, name); take the first non-None.
+    A block missing a subtree contributes nothing (the `if n.children` filter),
+    so the mean falls back to the blocks where the path is present.
+    """
     if not forests:
         return []
     by_name: dict[str, list[TopdownNode]] = {}
