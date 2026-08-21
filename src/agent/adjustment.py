@@ -222,6 +222,24 @@ def validate_adjustments(
             rejected.append({**adj, "reason": "missing_actual"})
             continue
 
+        # DEBUG-trace each proposal that reaches direction evaluation (passed
+        # domain + tier, has a sensitivity entry, metric unsatisfied, actual
+        # known) so an operator running at MIRAGE_LOG_LEVEL=DEBUG can see what
+        # was proposed each round and verify a reject reason (e.g.
+        # wrong_direction) against the proven direction + actual value. The
+        # structlog level filter suppresses this at INFO -> zero noise by default.
+        logger.debug(
+            "adjustment_proposed",
+            knob=knob,
+            from_=adj.get("from"),
+            to=to,
+            metric=metric,
+            direction=direction,
+            actual=actual,
+            err=err,
+            tier=tier,
+        )
+
         is_enum = knob in STRUCTURAL_KNOBS and STRUCTURAL_KNOBS[knob].get("kind") == "enum"
         if is_enum:
             values = entry.get("values") or []

@@ -275,14 +275,25 @@ def test_serialize_recent_history_omits_build_fields_when_no_failure() -> None:
 # -- revise_instruction: knob-domain injection ------------------------------
 
 
-def test_render_knob_domains_lists_enum_and_numeric() -> None:
+def test_render_knob_domains_lists_structural_only() -> None:
+    # The revise prompt drives the STRUCTURAL tier only; runtime knobs are owned
+    # by the deterministic tier. Listing runtime knob domains invites the LLM to
+    # propose (then get rejected) runtime moves, so only structural domains are
+    # rendered.
     from agent.agent_core import _render_knob_domains
 
     text = _render_knob_domains()
+    # Structural knobs are listed so the LLM picks valid values.
     assert "archetype" in text
-    assert "matmul" in text  # an enum value
-    assert "compute_ratio" in text  # a runtime numeric knob domain
+    assert "matmul" in text  # an archetype enum value
+    assert "access_pattern" in text
     assert "working_set_mb" in text
+    assert "iterations" in text
+    # Runtime knobs are NOT listed -- the structural tier does not own them.
+    assert "compute_ratio" not in text
+    assert "memory_ratio" not in text
+    assert "thread_count" not in text
+    assert "qps" not in text
 
 
 def test_revise_instruction_injects_knob_domains(monkeypatch: Any) -> None:
