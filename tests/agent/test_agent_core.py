@@ -306,3 +306,41 @@ def test_revise_instruction_injects_knob_domains(monkeypatch: Any) -> None:
     assert "{knob_domains}" not in prompt
     assert "archetype" in prompt
     assert "matmul" in prompt
+
+
+# -- max_tokens hardening: warn on the 4096 default for reasoning models ------
+
+
+class _CoreLogSpy:
+    """Records structlog info/warning calls (PrintLoggerFactory -> caplog misses)."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict[str, Any]]] = []
+
+    def info(self, event: str | None = None, **kw: Any) -> None:
+        self.events.append((event or "", kw))
+
+    def warning(self, event: str | None = None, **kw: Any) -> None:
+        self.events.append((event or "", kw))
+
+
+def test_init_warns_max_tokens_at_default_for_reasoning_model(monkeypatch: Any) -> None:
+    spy = _CoreLogSpy()
+    monkeypatch.setattr("agent.agent_core.logger", spy)
+    AgentCore(config=AgentConfig(model="glm-4.7", max_tokens=4096, api_key=None))
+    assert any(e == "max_tokens_at_default_for_reasoning_model" for e, _ in spy.events)
+
+
+def test_init_no_warning_when_max_tokens_raised(monkeypatch: Any) -> None:
+    spy = _CoreLogSpy()
+    monkeypatch.setattr("agent.agent_core.logger", spy)
+    AgentCore(config=AgentConfig(model="glm-4.7", max_tokens=16384, api_key=None))
+    assert not any(e == "max_tokens_at_default_for_reasoning_model" for e, _ in spy.events)
+
+
+def test_init_no_warning_for_non_reasoning_model(monkeypatch: Any) -> None:
+    # claude-sonnet-5 at the 4096 default is not a reasoning model -> no warning.
+    spy = _CoreLogSpy()
+    monkeypatch.setattr("agent.agent_core.logger", spy)
+    AgentCore(config=AgentConfig(model="claude-sonnet-5", max_tokens=4096, api_key=None))
+    assert not any(e == "max_tokens_at_default_for_reasoning_model" for e, _ in spy.events)

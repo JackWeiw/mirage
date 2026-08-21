@@ -7,6 +7,7 @@ Agent is optional — Pipeline works in local-only mode without it.
 
 import json
 import pathlib
+import re
 import time
 from typing import Any, cast
 
@@ -25,6 +26,10 @@ _BACKOFF_BASE_SECONDS = 1.0
 
 # How many recent records' adjustments/effects to surface in the revise prompt.
 _RECENT_HISTORY_N = 5
+
+# Reasoning models burn thousands of tokens on chain-of-thought before the JSON
+# answer; the 4096 default truncates them mid-thought (#67).
+_REASONING_MODEL_RE = re.compile(r"\b(glm-4|deepseek-r1|qwen3|qwq|o1|o3|o4)\b")
 
 
 def _serialize_recent_history(history: Any) -> str:
@@ -98,6 +103,16 @@ class AgentCore:
         self.config = config or AgentConfig()
         self.model = self.config.model
         self.max_tokens = self.config.max_tokens
+        # Reasoning models (GLM-4.x, deepseek-r1, o-series, qwen3) emit a long
+        # chain-of-thought before the final JSON answer; the 4096 default
+        # truncates that mid-thought -> LLMTruncationError (#67). Warn at startup
+        # so the silent 4096 trap surfaces instead of failing the first call.
+        if self.max_tokens <= 4096 and _REASONING_MODEL_RE.search(self.model.lower()):
+            logger.warning(
+                "max_tokens_at_default_for_reasoning_model",
+                max_tokens=self.max_tokens,
+                model=self.model,
+            )
         self._client: LLMClient | None = None
         if self.config.api_key is not None:
             self._client = make_client(self.config)

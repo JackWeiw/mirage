@@ -12,6 +12,10 @@ honored by FrameworkConfig.from_env (PR #64):
   MIRAGE_AGENT_BASE_URL  -> the gateway   (never a vendor official host)
   MIRAGE_AGENT_PROVIDER  -> "anthropic" | "openai"
   MIRAGE_AGENT_MODEL     -> model id
+  MIRAGE_AGENT_MAX_TOKENS -> max completion tokens (reasoning models like
+     GLM-4.7/deepseek-r1 burn thousands on chain-of-thought before the JSON
+     answer; the 4096 default truncates them mid-thought -> LLMTruncationError.
+     Set >= 16384 for reasoning models.)
 Use --config to layer a YAML FrameworkConfig under those env overrides
 (precedence: yaml < env). --no-agent forces offline/runtime-only regardless.
 """
