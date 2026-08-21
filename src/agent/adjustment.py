@@ -32,6 +32,29 @@ RUNTIME_KNOBS: dict[str, dict[str, Any]] = {
 KNOB_DOMAINS: dict[str, dict[str, Any]] = {**STRUCTURAL_KNOBS, **RUNTIME_KNOBS}
 
 
+def _canonicalize_enum(knob: str, value: Any) -> Any:
+    """Return the canonical enum value for ``knob``, or ``value`` unchanged.
+
+    Matches case-insensitively and after stripping whitespace so an LLM-emitted
+    ``"MatMul"`` / ``" hash "`` is accepted and stored as the canonical form the
+    codegen template branches on (``archetype == 'matmul'``). A value matching
+    no domain entry is returned unchanged so ``_validate_value`` rejects it as a
+    domain violation. Numeric/unknown knobs are returned untouched.
+    """
+    dom = KNOB_DOMAINS.get(knob)
+    if not dom or dom.get("kind") != "enum":
+        return value
+    values = dom["values"]
+    if value in values:
+        return value
+    if isinstance(value, str):
+        needle = value.strip().lower()
+        for v in values:
+            if isinstance(v, str) and v.lower() == needle:
+                return v
+    return value
+
+
 def _validate_value(knob: str, to: Any) -> None:
     """Raise ValueError if `to` is outside the knob's valid domain."""
     if knob not in KNOB_DOMAINS:
@@ -63,9 +86,10 @@ def apply_adjustments(
     out = deepcopy(instruction)
     for adj in adjustments:
         knob = adj["knob"]
-        _validate_value(knob, adj["to"])
+        to = _canonicalize_enum(knob, adj["to"])
+        _validate_value(knob, to)
         if knob in RUNTIME_KNOBS:
-            out.setdefault("config", {})[knob] = adj["to"]
+            out.setdefault("config", {})[knob] = to
         else:
             stage_name = adj.get("stage", "")
             stage = next(
@@ -73,7 +97,7 @@ def apply_adjustments(
             )
             if stage is None:
                 raise ValueError(f"unknown stage: {stage_name!r}")
-            stage["strategies"][0]["synthesis_config"][knob] = adj["to"]
+            stage["strategies"][0]["synthesis_config"][knob] = to
     return out
 
 
@@ -160,12 +184,13 @@ def validate_adjustments(
 
     for adj in adjustments:
         knob = adj["knob"]
+        to = _canonicalize_enum(knob, adj["to"])
         # Domain.
         if knob not in KNOB_DOMAINS:
             rejected.append({**adj, "reason": "unknown_knob"})
             continue
         try:
-            _validate_value(knob, adj["to"])
+            _validate_value(knob, to)
         except ValueError as exc:
             rejected.append({**adj, "reason": f"domain_violation:{exc}"})
             continue
@@ -181,7 +206,6 @@ def validate_adjustments(
 
         # Direction (decoupled from largest error): uses ACTUAL current, not from.
         actual = _actual_current(instruction, adj)
-        to = adj["to"]
         entry = sensitivity.get(knob, {})
         metric = adj.get("expected_metric") or entry.get("target_metric")
         direction = adj.get("expected_direction") or entry.get("expected_direction")

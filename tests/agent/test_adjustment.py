@@ -889,3 +889,72 @@ def test_deterministic_revise_falls_through_boundary_exhausted_metric() -> None:
     assert adj[0]["knob"] == "compute_ratio"  # retiring via compute_ratio
     assert adj[0]["expected_metric"] == "retiring"
     assert adj[0]["to"] < 0.5  # retiring too high + compute_ratio "up" => decrease
+
+
+# -- enum canonicalization (LLM-tolerant intake) ---------------------------
+
+
+def test_apply_canonicalizes_enum_case_variant() -> None:
+    # LLM emits "MatMul"; apply stores the canonical "matmul" so the codegen
+    # template's `archetype == 'matmul'` branch matches.
+    out = apply_adjustments(
+        _instr(),
+        [
+            {
+                "stage": "comp_stage",
+                "knob": "archetype",
+                "from": "matmul",
+                "to": "MatMul",
+                "rationale": "",
+                "expected_metric": "retiring",
+                "expected_direction": "up",
+            }
+        ],
+    )
+    assert out["stages"][1]["strategies"][0]["synthesis_config"]["archetype"] == "matmul"
+
+
+def test_apply_canonicalizes_enum_whitespace_variant() -> None:
+    out = apply_adjustments(
+        _instr(),
+        [
+            {
+                "stage": "comp_stage",
+                "knob": "archetype",
+                "from": "matmul",
+                "to": "  hash  ",
+                "rationale": "",
+                "expected_metric": "retiring",
+                "expected_direction": "up",
+            }
+        ],
+    )
+    assert out["stages"][1]["strategies"][0]["synthesis_config"]["archetype"] == "hash"
+
+
+def test_apply_rejects_truly_unknown_enum_after_canonicalize() -> None:
+    # "n_queens" matches no domain value -> canonicalize returns it unchanged
+    # -> _validate_value rejects as domain violation.
+    with pytest.raises(ValueError, match="invalid value"):
+        apply_adjustments(
+            _instr(),
+            [
+                {
+                    "stage": "comp_stage",
+                    "knob": "archetype",
+                    "from": "matmul",
+                    "to": "n_queens",
+                    "rationale": "",
+                    "expected_metric": "retiring",
+                    "expected_direction": "up",
+                }
+            ],
+        )
+
+
+def test_canonicalize_leaves_numeric_knob_untouched() -> None:
+    # Numeric knobs are not enums; canonicalization is a no-op.
+    from agent.adjustment import _canonicalize_enum
+
+    assert _canonicalize_enum("working_set_mb", 256) == 256
+    assert _canonicalize_enum("compute_ratio", 0.8) == 0.8
