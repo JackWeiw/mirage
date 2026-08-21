@@ -31,6 +31,17 @@ Your job:
 CONSTRAINT: every adjustment's direction MUST match the sensitivity table's
 PROVEN direction for that knob. Never move a knob against its proven direction.
 
+CONSTRAINT: archetype and access_pattern values MUST be chosen ONLY from the
+VALID KNOB DOMAINS list below — never invent names outside it. Numeric knobs
+MUST stay within their stated bounds. Pick, in order of preference, knobs that
+appear in the SENSITIVITY TABLE with a proven direction matching an unsatisfied
+metric; archetype/iterations have no spike data, so use them only as a
+structural fallback when the sensitivity-instrumented knobs are boundary-
+exhausted.
+
+=== VALID KNOB DOMAINS ===
+{knob_domains}
+
 Output structured JSON matching this schema:
 {
   "revised_instruction": { ...the revised instruction, same schema as prior... },

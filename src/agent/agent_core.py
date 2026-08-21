@@ -10,6 +10,7 @@ import pathlib
 import time
 from typing import Any, cast
 
+from agent.adjustment import KNOB_DOMAINS
 from agent.llm_client import LLMClient, make_client
 from config.framework_config import AgentConfig
 from observability.logging import get_logger
@@ -53,6 +54,22 @@ def _serialize_recent_history(history: Any) -> str:
     return json.dumps(recs)
 
 
+def _render_knob_domains() -> str:
+    """Render KNOB_DOMAINS as a human-readable list for the revise prompt.
+
+    Single source of truth: KNOB_DOMAINS is the dynamic merge of
+    STRUCTURAL_KNOBS + RUNTIME_KNOBS, so the gate's _validate_value and this
+    prompt never drift.
+    """
+    lines: list[str] = []
+    for knob, dom in KNOB_DOMAINS.items():
+        if dom["kind"] == "enum":
+            lines.append(f"- {knob}: one of {list(dom['values'])}")
+        else:
+            lines.append(f"- {knob}: {dom['kind']} in [{dom['min']}, {dom['max']}]")
+    return "\n".join(lines)
+
+
 class LLMError(RuntimeError):
     """Base error for AgentCore LLM failures."""
 
@@ -92,7 +109,7 @@ class AgentCore:
     def _load_prompt(self, name: str) -> str:
         """Load a prompt template from the prompts directory."""
         filepath = PROMPTS_DIR / name
-        return filepath.read_text()
+        return filepath.read_text(encoding="utf-8")
 
     def _transient_exceptions(self) -> tuple[type[Exception], ...]:
         """Exception classes worth retrying (rate limit, 5xx, connection).
@@ -249,6 +266,7 @@ class AgentCore:
             .replace("{report}", json.dumps(report))
             .replace("{sensitivity}", json.dumps(sensitivity))
             .replace("{recent_history}", _serialize_recent_history(history))
+            .replace("{knob_domains}", _render_knob_domains())
         )
         resp = self._call_llm_json(prompt)
         revised = resp.get("revised_instruction")
