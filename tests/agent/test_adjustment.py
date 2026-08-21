@@ -708,6 +708,9 @@ class _LogSpy:
     def warning(self, event: str | None = None, **kw: Any) -> None:
         self._record(event, kw)
 
+    def debug(self, event: str | None = None, **kw: Any) -> None:
+        self._record(event, kw)
+
 
 def test_validate_enum_no_spike_data_trusted_on_structural(monkeypatch: Any) -> None:
     # archetype has no sensitivity entry, but the adj declares an unsatisfied
@@ -745,12 +748,60 @@ def test_validate_enum_no_spike_data_trusted_on_structural(monkeypatch: Any) -> 
     assert len(accepted) == 1
     assert rejected == []
     assert spy.events, "expected a structural_enum_trusted log event"
-    assert spy.events[0][0] == "structural_enum_trusted"
-    fields = spy.events[0][1]
+    trusted = [e for e in spy.events if e[0] == "structural_enum_trusted"]
+    assert len(trusted) == 1
+    fields = trusted[0][1]
     assert fields["knob"] == "archetype"
     assert fields["actual"] == "hash"
     assert fields["to"] == "matmul"
     assert fields["metric"] == "retiring"
+
+
+def test_validate_logs_adjustment_proposed_at_debug(monkeypatch: Any) -> None:
+    # Every proposal that reaches direction evaluation is DEBUG-logged with its
+    # full direction context, so an operator running at MIRAGE_LOG_LEVEL=DEBUG
+    # can verify a reject reason (e.g. wrong_direction) against the proven
+    # direction + actual value. Here a memory_ratio move that goes the WRONG
+    # way is both logged (proposal + context) and rejected (wrong_direction) --
+    # the exact pairing an operator triages on a real run.
+    spy = _LogSpy()
+    monkeypatch.setattr("agent.adjustment.logger", spy)
+    instr = {"config": {"memory_ratio": 0.5}}
+    from agent.adjustment import validate_adjustments
+
+    accepted, rejected = validate_adjustments(
+        [
+            {
+                "stage": "",
+                "knob": "memory_ratio",
+                "from": 0.5,
+                "to": 0.6,  # increase, but backend too high wants decrease -> wrong_direction
+                "rationale": "bump memory",
+                "expected_metric": "backend_bound",
+                "expected_direction": "up",
+            }
+        ],
+        instr,
+        _report(backend_diff=20.0),  # backend too high -> want down (err=+1)
+        _SENS,
+        tier="runtime",
+    )
+    assert accepted == []
+    assert len(rejected) == 1
+    assert rejected[0]["reason"] == "wrong_direction"
+    # The proposal was DEBUG-logged before the reject, with the context needed
+    # to confirm the reject is genuine (direction + actual + err sign).
+    proposed = [e for e in spy.events if e[0] == "adjustment_proposed"]
+    assert len(proposed) == 1
+    fields = proposed[0][1]
+    assert fields["knob"] == "memory_ratio"
+    assert fields["from_"] == 0.5
+    assert fields["to"] == 0.6
+    assert fields["metric"] == "backend_bound"
+    assert fields["direction"] == "up"
+    assert fields["actual"] == 0.5
+    assert fields["err"] == 1  # backend too high -> want down
+    assert fields["tier"] == "runtime"
 
 
 def test_validate_enum_with_spike_data_correct_direction_accepted() -> None:
