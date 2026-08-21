@@ -3,7 +3,14 @@
 from typing import Any
 
 from config.framework_config import ComparisonConfig
-from profile.profile_schema import HotspotFunction, MemoryProfile, Profile, TopdownL1
+from profile.profile_schema import HotspotFunction, MemoryProfile, Profile, TopdownL1, TopdownNode
+
+
+def _dump_topdown_tree(tree: list[TopdownNode] | None) -> list[dict[str, Any]] | None:
+    """Serialize a topdown tree to plain dicts for a JSON-serializable report."""
+    if tree is None:
+        return None
+    return [node.model_dump() for node in tree]
 
 
 class ProfileComparator:
@@ -80,9 +87,15 @@ class ProfileComparator:
 
         recommendation = self._make_recommendation(topdown_l1_report, coverage_report)
 
+        topdown_tree_report = {
+            "customer": _dump_topdown_tree(customer_profile.topdown_tree),
+            "workload": _dump_topdown_tree(workload_profile.topdown_tree),
+        }
+
         return {
             "iteration": iteration,
             "topdown_l1": topdown_l1_report,
+            "topdown_tree": topdown_tree_report,
             "memory": memory_report,
             "hotspot_coverage": coverage_report,
             "convergence": {
