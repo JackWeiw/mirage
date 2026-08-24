@@ -73,6 +73,36 @@ class TopdownL2(BaseModel):
     retiring: TopdownL2Retiring | None = None
 
 
+class TopdownNode(BaseModel):
+    """One node of the hierarchical devkit topdown tree (L1->L4).
+
+    `value` is the Bound(%) as-printed by devkit (a percentage). `children`
+    holds the deeper levels. `sampling_event` is the "Preferred Sampling Event"
+    column; devkit prints "--" for most rows, mapped to None here.
+    """
+
+    name: str
+    value: float
+    children: list["TopdownNode"] = Field(default_factory=list)
+    sampling_event: str | None = None
+
+
+TopdownNode.model_rebuild()
+
+
+class TopdownSummary(BaseModel):
+    """Per-capture raw counters from the devkit "TOP-DOWN Summary Report" header.
+
+    Averaged across the -i interval blocks when parsed from a multi-block text
+    report. `cycles`/`instructions` are raw integer counts; `ipc` is
+    instructions-per-cycle as-printed.
+    """
+
+    cycles: int
+    instructions: int
+    ipc: float
+
+
 class MemoryProfile(BaseModel):
     bandwidth_gbps: float | None = None
     l3_miss_rate: float | None = None
@@ -100,6 +130,8 @@ class Profile(BaseModel):
     hotspots: list[HotspotFunction] = Field(default_factory=list)
     topdown: TopdownL1 | None = None
     topdown_l2: TopdownL2 | None = None
+    summary: TopdownSummary | None = None
+    topdown_tree: list[TopdownNode] | None = None
     memory: MemoryProfile | None = None
     optimizations: list[OptimizationRecord] = Field(default_factory=list)
     business_logic: str | None = None

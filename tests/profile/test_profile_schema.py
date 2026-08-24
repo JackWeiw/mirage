@@ -10,6 +10,8 @@ from profile.profile_schema import (
     TopdownL2,
     TopdownL2Backend,
     TopdownL2Frontend,
+    TopdownNode,
+    TopdownSummary,
 )
 
 
@@ -90,3 +92,78 @@ def test_full_profile_serialization() -> None:
     assert loaded.hotspots[0].self_pct == 12.5
     assert loaded.memory is not None
     assert loaded.memory.bandwidth_gbps == 45.2
+
+
+def test_topdown_node_recursive_children() -> None:
+    leaf = TopdownNode(name="L3 Bound", value=30.96)
+    parent = TopdownNode(name="Memory Bound", value=38.89, children=[leaf])
+    assert parent.children[0].name == "L3 Bound"
+    assert parent.children[0].value == 30.96
+    assert parent.children[0].sampling_event is None
+
+
+def test_topdown_node_sampling_event() -> None:
+    node = TopdownNode(name="Retiring", value=7.38, sampling_event="inst_retired")
+    assert node.sampling_event == "inst_retired"
+
+
+def test_topdown_node_defaults() -> None:
+    node = TopdownNode(name="Backend Bound", value=72.01)
+    assert node.children == []
+    assert node.sampling_event is None
+
+
+def test_topdown_summary_fields() -> None:
+    s = TopdownSummary(cycles=380549550617, instructions=168580377238, ipc=0.44)
+    assert s.cycles == 380549550617
+    assert s.instructions == 168580377238
+    assert s.ipc == 0.44
+
+
+def test_profile_summary_and_tree_default_none() -> None:
+    profile = Profile(metadata=ProfileMetadata(customer="acme", date="2026-08-21"))
+    assert profile.summary is None
+    assert profile.topdown_tree is None
+
+
+def test_topdown_node_round_trips_json() -> None:
+    root = TopdownNode(
+        name="Backend Bound",
+        value=72.01,
+        children=[
+            TopdownNode(
+                name="Memory Bound",
+                value=38.89,
+                children=[TopdownNode(name="L3 Bound", value=30.96)],
+            ),
+        ],
+    )
+    dumped = TopdownNode.model_dump_json(root)
+    loaded = TopdownNode.model_validate_json(dumped)
+    assert loaded.children[0].children[0].name == "L3 Bound"
+    assert loaded.children[0].children[0].value == 30.96
+
+
+def test_profile_topdown_tree_round_trips_json() -> None:
+    # A populated recursive topdown_tree on Profile must survive JSON round-trip
+    # (exercises list-of-recursive-model serialization on the Profile class).
+    profile = Profile(
+        metadata=ProfileMetadata(customer="acme", date="2026-08-21"),
+        topdown_tree=[
+            TopdownNode(
+                name="Backend Bound",
+                value=72.01,
+                children=[
+                    TopdownNode(
+                        name="Memory Bound",
+                        value=38.89,
+                        children=[TopdownNode(name="L3 Bound", value=30.96)],
+                    ),
+                ],
+            )
+        ],
+    )
+    loaded = Profile.model_validate_json(profile.model_dump_json())
+    assert loaded.topdown_tree is not None
+    assert loaded.topdown_tree[0].children[0].children[0].name == "L3 Bound"
+    assert loaded.topdown_tree[0].children[0].children[0].value == 30.96

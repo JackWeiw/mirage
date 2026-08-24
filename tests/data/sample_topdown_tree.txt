@@ -1,0 +1,57 @@
+devkit tuner top-down -d <dur> -i <int> --cpu <range>
+TOP-DOWN Summary Report-1                      Time:<redacted>
+=======================================================================
+Top-down metrics of CPU(s) <redacted>:
+Cycles              100,000,000,000
+Instructions        45,000,000,000
+IPC                 0.45
+────────────────────────────────────────────────────────────────────────────────
+  Top-down Metrics                         Bound(%)    Preferred Sampling Event
+────────────────────────────────────────────────────────────────────────────────
+  Bad Speculation                             3.00    --
+  ├── Branch Mispredicts                      2.00    br_mis_pred
+  └── Machine Clears                          1.00    --
+  Frontend Bound                             17.00    --
+  ├── Fetch Latency Bound                   15.00    --
+  │   └── ICache Miss                       13.00    --
+  └── Fetch Bandwidth Bound                   2.00    --
+  Retiring                                    8.00    inst_retired
+  Backend Bound                              72.00    --
+  ├── Core Bound                             33.00    --
+  │   └── Exe Ports Util                     32.00    --
+  │       ├── 0 ports non serialize          18.00    --
+  │       └── 1 ports                         2.00    --
+  └── Memory Bound                           39.00    --
+      ├── L1 Bound                            6.00    --
+      ├── L3 Bound                           31.00    --
+      └── Mem Bound                           0.02    cache-misses
+────────────────────────────────────────────────────────────────────────────────
+<redacted> milliseconds time elapsed
+TOP-DOWN Summary Report-2                      Time:<redacted>
+=======================================================================
+Top-down metrics of CPU(s) <redacted>:
+Cycles              120,000,000,000
+Instructions        55,000,000,000
+IPC                 0.55
+────────────────────────────────────────────────────────────────────────────────
+  Top-down Metrics                         Bound(%)    Preferred Sampling Event
+────────────────────────────────────────────────────────────────────────────────
+  Bad Speculation                             5.00    --
+  ├── Branch Mispredicts                      4.00    br_mis_pred
+  └── Machine Clears                          1.00    --
+  Frontend Bound                             15.00    --
+  ├── Fetch Latency Bound                   14.00    --
+  │   └── ICache Miss                       12.00    --
+  └── Fetch Bandwidth Bound                   1.00    --
+  Retiring                                   10.00    inst_retired
+  Backend Bound                              70.00    --
+  ├── Core Bound                             31.00    --
+  │   └── Exe Ports Util                     30.00    --
+  │       ├── 0 ports non serialize          17.00    --
+  │       └── 1 ports                         2.00    --
+  └── Memory Bound                           39.00    --
+      ├── L1 Bound                            6.00    --
+      ├── L3 Bound                           33.00    --
+      └── Mem Bound                           0.02    cache-misses
+────────────────────────────────────────────────────────────────────────────────
+<redacted> milliseconds time elapsed

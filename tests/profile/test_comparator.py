@@ -8,6 +8,7 @@ from profile.profile_schema import (
     Profile,
     ProfileMetadata,
     TopdownL1,
+    TopdownNode,
 )
 
 
@@ -157,3 +158,78 @@ def test_compare_none_topdown_graceful() -> None:
     report = comparator.compare(customer, workload)
     assert report["topdown_l1"] == {}
     assert report["memory"] == {}
+
+
+def test_compare_surfaces_topdown_tree_verbatim() -> None:
+    cust = Profile(
+        metadata=ProfileMetadata(customer="a", date="2026-08-21"),
+        topdown=TopdownL1(
+            frontend_bound=17.0, backend_bound=71.0, bad_speculation=4.0, retiring=8.0
+        ),
+        topdown_tree=[
+            TopdownNode(
+                name="Backend Bound",
+                value=71.0,
+                children=[TopdownNode(name="L3 Bound", value=32.0)],
+            )
+        ],
+    )
+    work = Profile(
+        metadata=ProfileMetadata(customer="b", date="2026-08-21"),
+        topdown=TopdownL1(
+            frontend_bound=20.0, backend_bound=68.0, bad_speculation=4.0, retiring=8.0
+        ),
+        topdown_tree=[
+            TopdownNode(
+                name="Backend Bound",
+                value=68.0,
+                children=[TopdownNode(name="L3 Bound", value=10.0)],
+            )
+        ],
+    )
+    rep = ProfileComparator().compare(cust, work)
+    assert rep["topdown_tree"]["customer"][0]["name"] == "Backend Bound"
+    assert rep["topdown_tree"]["customer"][0]["children"][0]["name"] == "L3 Bound"
+    assert rep["topdown_tree"]["customer"][0]["children"][0]["value"] == 32.0
+    assert rep["topdown_tree"]["workload"][0]["children"][0]["value"] == 10.0
+
+
+def test_compare_tree_does_not_affect_convergence() -> None:
+    # Observability-only: adding a topdown_tree must NOT change convergence or
+    # the recommendation, which still operate on L1 alone.
+    base_l1 = TopdownL1(
+        frontend_bound=25.0, backend_bound=40.0, bad_speculation=10.0, retiring=25.0
+    )
+    cust_plain = Profile(metadata=ProfileMetadata(customer="a", date="2026-08-21"), topdown=base_l1)
+    work_plain = Profile(metadata=ProfileMetadata(customer="b", date="2026-08-21"), topdown=base_l1)
+    cust_tree = Profile(
+        metadata=ProfileMetadata(customer="a", date="2026-08-21"),
+        topdown=base_l1,
+        topdown_tree=[TopdownNode(name="Backend Bound", value=40.0)],
+    )
+    work_tree = Profile(
+        metadata=ProfileMetadata(customer="b", date="2026-08-21"),
+        topdown=base_l1,
+        topdown_tree=[TopdownNode(name="Backend Bound", value=40.0)],
+    )
+    plain_rep = ProfileComparator().compare(cust_plain, work_plain)
+    tree_rep = ProfileComparator().compare(cust_tree, work_tree)
+    assert plain_rep["convergence"] == tree_rep["convergence"]
+    assert plain_rep["recommendation"] == tree_rep["recommendation"]
+
+
+def test_compare_topdown_tree_none_when_absent() -> None:
+    cust = Profile(
+        metadata=ProfileMetadata(customer="a", date="2026-08-21"),
+        topdown=TopdownL1(
+            frontend_bound=25.0, backend_bound=40.0, bad_speculation=10.0, retiring=25.0
+        ),
+    )
+    work = Profile(
+        metadata=ProfileMetadata(customer="b", date="2026-08-21"),
+        topdown=TopdownL1(
+            frontend_bound=25.0, backend_bound=40.0, bad_speculation=10.0, retiring=25.0
+        ),
+    )
+    rep = ProfileComparator().compare(cust, work)
+    assert rep["topdown_tree"] == {"customer": None, "workload": None}
