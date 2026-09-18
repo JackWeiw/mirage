@@ -8,7 +8,7 @@ from codegen.module_graph import FunctionSignature, ModuleDescriptor, ModuleGrap
 
 
 def _graph() -> ModuleGraph:
-    """Two modules: ns_a (public foo, depends on ns_b) + ns_b (public bar)."""
+    """Two modules: ns_a (public foo + internal helper, depends on ns_b) + ns_b (public bar)."""
     ns_b = ModuleDescriptor(
         name="ns_b",
         namespace="ns_b",
@@ -31,6 +31,14 @@ def _graph() -> ModuleGraph:
                 namespace="ns_a",
                 call_spec=CallSpec(includes=[], statement="foo()", setup=""),
                 self_work=SelfWork(kind="synthesis", archetype="compute", units=40),
+            )
+        ],
+        internal_functions=[
+            FunctionSignature(
+                function="helper",
+                namespace="ns_a",
+                call_spec=CallSpec(includes=[], statement="helper()", setup=""),
+                self_work=SelfWork(kind="synthesis", archetype="compute", units=5),
             )
         ],
     )
@@ -71,7 +79,7 @@ def test_synthesis_plan_from_graph_envelopes_every_function() -> None:
     assert plan.module_graph is graph
     # one task per public+internal function across all modules
     names = sorted(t.signature.function for t in plan.tasks)
-    assert names == ["bar", "foo"]
+    assert names == ["bar", "foo", "helper"]
     # each task's module matches its signature's module
     for t in plan.tasks:
         assert t.module in {"ns_a", "ns_b"}
@@ -81,7 +89,7 @@ def test_synthesis_plan_round_trips_json() -> None:
     plan = SynthesisPlan.from_graph(_graph(), source="deterministic")
     loaded = SynthesisPlan.model_validate_json(plan.model_dump_json())
     assert loaded.source == "deterministic"
-    assert len(loaded.tasks) == 2
+    assert len(loaded.tasks) == 3
     assert loaded.module_graph.modules[0].name in {"ns_a", "ns_b"}
     # task envelope survives the round-trip (signature reused, not duplicated)
-    assert loaded.tasks[0].signature.function in {"bar", "foo"}
+    assert loaded.tasks[0].signature.function in {"bar", "foo", "helper"}
