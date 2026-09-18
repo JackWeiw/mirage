@@ -9,7 +9,7 @@ from xml.etree import ElementTree
 
 from ingestion.classifier import FunctionClassifier
 from observability.logging import get_logger
-from profile.profile_schema import HotspotFunction
+from profile.profile_schema import CallTreeNode, HotspotFunction
 
 if TYPE_CHECKING:
     import pathlib
@@ -118,6 +118,63 @@ class FlamegraphParser:
             FileNotFoundError: If filepath doesn't exist.
         """
         return self._to_stacks(filepath)
+
+    def parse_tree(self, filepath: pathlib.Path) -> list[CallTreeNode]:
+        """Build the faithful call tree (per-call-site self_samples) from stacks.
+
+        Unlike parse_folded (one representative path per leaf), this preserves
+        the real parent->child structure: the same function called from two
+        distinct parents is two distinct CallTreeNode call-sites with their own
+        self-time. Returns a forest (one root per distinct top-level frame).
+        """
+        stacks = self._to_stacks(filepath)
+        if not stacks:
+            raise ValueError(f"Flamegraph file contains no valid samples: {filepath}")
+        total = sum(count for _, count in stacks)
+        if total <= 0:
+            raise ValueError(f"Flamegraph file has zero total samples: {filepath}")
+
+        roots: list[CallTreeNode] = []
+        root_index: dict[str, CallTreeNode] = {}
+
+        for frames, count in stacks:
+            parent: CallTreeNode | None = None
+            for depth, frame in enumerate(frames):
+                node: CallTreeNode | None = None
+                if parent is None:
+                    node = root_index.get(frame)
+                else:
+                    for child in parent.children:
+                        if child.function == frame:
+                            node = child
+                            break
+                if node is None:
+                    source, library = self.classifier.classify(frame)
+                    node = CallTreeNode(
+                        function=frame,
+                        library=library,
+                        source=source,
+                        depth=depth,
+                    )
+                    if parent is None:
+                        root_index[frame] = node
+                        roots.append(node)
+                    else:
+                        parent.children.append(node)
+                node.cumulative_samples += count
+                if depth == len(frames) - 1:
+                    node.self_samples += count
+                parent = node
+
+        def fill_pct(node: CallTreeNode) -> None:
+            node.self_pct = (node.self_samples / total) * 100.0
+            node.cumulative_pct = (node.cumulative_samples / total) * 100.0
+            for child in node.children:
+                fill_pct(child)
+
+        for root in roots:
+            fill_pct(root)
+        return roots
 
     def _to_stacks(self, filepath: pathlib.Path) -> list[tuple[list[str], int]]:
         """Dispatch parsing by suffix; raise FileNotFoundError if the path is missing."""

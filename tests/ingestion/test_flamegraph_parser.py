@@ -277,3 +277,38 @@ def test_parse_folded_logs_skipped_malformed_lines(tmp_path: pathlib.Path, capsy
     parser.parse_stacks(fg)
     captured = capsys.readouterr()
     assert "skipped_malformed_folded_lines" in captured.out
+
+
+def test_parse_tree_preserves_per_call_site_self(tmp_path: pathlib.Path) -> None:
+    """The same function called from two distinct parents is two call-sites
+    with distinct self_samples — the fidelity parse_folded loses."""
+    fg = tmp_path / "f.txt"
+    # b called from a (10 samples) AND from c (5 samples) — two call-sites.
+    fg.write_text("main;a;b 10\nmain;c;b 5\n")
+    parser = FlamegraphParser()
+    forest = parser.parse_tree(fg)
+
+    roots = [n for n in forest if n.function == "main"]
+    assert len(roots) == 1
+    main = roots[0]
+    # main is not a leaf here: self_samples 0, cumulative_samples 15.
+    assert main.self_samples == 0
+    assert main.cumulative_samples == 15
+    assert main.depth == 0
+
+    a = next(c for c in main.children if c.function == "a")
+    c = next(ch for ch in main.children if ch.function == "c")
+    b_under_a = next(ch for ch in a.children if ch.function == "b")
+    b_under_c = next(ch for ch in c.children if ch.function == "b")
+    assert b_under_a.self_samples == 10
+    assert b_under_c.self_samples == 5
+    # percentages derived against total = 15
+    assert abs(b_under_a.self_pct - (10 / 15 * 100.0)) < 0.01
+
+
+def test_parse_tree_empty_file_raises(tmp_path: pathlib.Path) -> None:
+    fg = tmp_path / "empty.txt"
+    fg.write_text("\n")
+    parser = FlamegraphParser()
+    with pytest.raises(ValueError, match="no valid samples"):
+        parser.parse_tree(fg)
