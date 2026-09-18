@@ -37,6 +37,9 @@ class SynthesisPlan(BaseModel):
     tasks: list[SynthesisTask] = Field(default_factory=list)
     source: str = "deterministic"  # "deterministic" | "llm"
     notes: str | None = None
+    synthesized_bodies: dict[str, str] = Field(
+        default_factory=dict
+    )  # module_name -> cached .cpp body (surgical re-synthesis state)
 
     @classmethod
     def from_graph(cls, graph: ModuleGraph, source: str = "deterministic") -> "SynthesisPlan":

@@ -2,8 +2,16 @@
 
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
+
+import pytest
+
+from agent.agent_core import LLMResponseError
 from agent.architect import ArchitectAgent
 from agent.llm_client import LLMClient
+from agent.synthesis_plan import SynthesisPlan
+from codegen.module_graph_builder import ModuleGraphBuilder
 from config.framework_config import AgentConfig
 from profile.profile_schema import CallTreeNode, Profile, ProfileMetadata
 
@@ -108,3 +116,52 @@ def test_design_plan_falls_back_on_invalid_llm_response() -> None:
     plan = arch.design_plan(_profile_with_call_tree())
     assert plan.source == "deterministic"
     assert len(plan.module_graph.modules) >= 2
+
+
+def _seeded_plan() -> SynthesisPlan:
+    """A plan with two synthesized bodies cached (for revise_plan tests)."""
+    plan = SynthesisPlan.from_graph(
+        ModuleGraphBuilder().build(_profile_with_call_tree(), project_name="acme"),
+        source="llm",
+    )
+    plan.synthesized_bodies = {"ns_a": "// body a", "ns_b": "// body b"}
+    return plan
+
+
+def test_revise_plan_clears_targeted_module_bodies() -> None:
+    """revise_plan: LLM names modules to re-synthesize; we clear their cached
+    synthesized_bodies (cache-miss -> orchestrator re-synthesizes only them),
+    preserving unchanged modules' bodies. LLM-only (loop calls when available)."""
+    arch = _stub_architect(
+        json.dumps(
+            {
+                "resynthesize_modules": ["ns_a"],
+                "adjustments": [{"module": "ns_a", "reason": "backend_bound gap"}],
+            }
+        )
+    )
+    revised, adjustments = arch.revise_plan(
+        _seeded_plan(), {"topdown_l1": {}}, {}, SimpleNamespace(records=[])
+    )
+    assert "ns_a" not in revised.synthesized_bodies
+    assert revised.synthesized_bodies["ns_b"] == "// body b"
+    assert adjustments == [{"module": "ns_a", "reason": "backend_bound gap"}]
+
+
+def test_revise_plan_malformed_response_raises() -> None:
+    """A malformed LLM response (no resynthesize_modules) raises LLMResponseError
+    -> the loop catches LLMError and degrades to the runtime tier."""
+    arch = _stub_architect("{}")  # missing resynthesize_modules + adjustments
+    with pytest.raises(LLMResponseError):
+        arch.revise_plan(_seeded_plan(), {"topdown_l1": {}}, {}, SimpleNamespace(records=[]))
+
+
+def test_revise_plan_empty_resynth_keeps_all_bodies() -> None:
+    """If the LLM returns an empty resynthesize_modules (no module clearly drives
+    the gap), the plan is returned unchanged (all bodies preserved)."""
+    arch = _stub_architect(json.dumps({"resynthesize_modules": [], "adjustments": []}))
+    revised, adjustments = arch.revise_plan(
+        _seeded_plan(), {"topdown_l1": {}}, {}, SimpleNamespace(records=[])
+    )
+    assert revised.synthesized_bodies == {"ns_a": "// body a", "ns_b": "// body b"}
+    assert adjustments == []
