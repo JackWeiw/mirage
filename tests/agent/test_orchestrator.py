@@ -128,3 +128,20 @@ def test_synthesize_online_skips_real_call_modules(tmp_path: pathlib.Path) -> No
     assert (out / "store.cpp").exists()
     # NOT patched (all real_call -> skipped) -> not the canned body
     assert (out / "store.cpp").read_text() != _CANNED
+
+
+def test_synthesize_cache_hit_skips_resynthesis(tmp_path: pathlib.Path) -> None:
+    """A module already in plan.synthesized_bodies (cache hit) is NOT re-synthesized;
+    its cached body is re-applied after generate_from_module_graph regenerates the
+    deterministic baseline. A cache-miss module IS synthesized + cached. Surgical
+    re-synthesis (Phase D)."""
+    orch = SynthesisOrchestrator(WorkloadGenerator(), _online_synthesizer(_CANNED))
+    plan = SynthesisPlan.from_graph(_synthesis_graph(), source="llm")
+    plan.synthesized_bodies = {"ns_a": "// CACHED\n"}  # ns_a cache hit; ns_b cache miss
+    out = orch.synthesize(plan, tmp_path / "project")
+    # ns_a: cache hit -> synthesizer skipped -> cached body re-applied (NOT _CANNED)
+    assert (out / "ns_a.cpp").read_text() == "// CACHED\n"
+    # ns_b: cache miss -> synthesizer called -> _CANNED, now cached
+    assert (out / "ns_b.cpp").read_text() == _CANNED
+    # the cache now holds both (ns_a kept, ns_b stored)
+    assert plan.synthesized_bodies == {"ns_a": "// CACHED\n", "ns_b": _CANNED}

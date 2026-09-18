@@ -35,18 +35,27 @@ class SynthesisOrchestrator:
         """Produce a generated C++ project from a SynthesisPlan.
 
         1. Group plan.tasks by module.
-        2. For modules with >=1 body_synthesis task, call the synthesizer -> body.
-        3. generate_from_module_graph(plan.module_graph, output_dir) (deterministic).
-        4. Overwrite the LLM-synthesized modules' .cpp with their bodies.
+        2. For modules with >=1 body_synthesis task: if the module is already in
+           plan.synthesized_bodies (cache hit), skip re-synthesis (surgical -- keep
+           the cached body); otherwise call the synthesizer -> body, store in the cache.
+        3. generate_from_module_graph(plan.module_graph, output_dir) (deterministic
+           baseline for ALL .cpp; this overwrites any previously-patched bodies, so
+           step 4 re-applies the cached bodies).
+        4. Overwrite the LLM-synthesized modules' .cpp with their (cached) bodies.
+
+        Cold start (empty cache) -> synthesize all body_synthesis modules. After a
+        revise_plan clears a module's cache entry -> that module is cache-miss ->
+        re-synthesized; unchanged modules keep their cached body (surgical).
         """
         by_module: dict[str, list[SynthesisTask]] = {}
         for task in plan.tasks:
             by_module.setdefault(task.module, []).append(task)
 
-        bodies: dict[str, str] = {}
         for module_name, tasks in by_module.items():
             if not any(t.role == "body_synthesis" for t in tasks):
                 continue  # all-deterministic module -> skip the LLM
+            if module_name in plan.synthesized_bodies:
+                continue  # cache hit -> surgical skip (keep the cached body)
             mod = self._module_by_name(plan.module_graph, module_name)
             if mod is None:
                 continue
@@ -54,11 +63,11 @@ class SynthesisOrchestrator:
             slice_ = {k: v for t in tasks for k, v in t.signature_slice.items()}
             body = self._synthesizer.synthesize(module_name, mod.namespace, sigs, slice_)
             if body is not None:
-                bodies[module_name] = body
+                plan.synthesized_bodies[module_name] = body  # cache for surgical reuse
 
         self._generator.generate_from_module_graph(plan.module_graph, output_dir)
 
-        for module_name, body in bodies.items():
+        for module_name, body in plan.synthesized_bodies.items():
             (output_dir / f"{module_name}.cpp").write_text(body)
             logger.info("orchestrator_patched_module_cpp", module=module_name)
 
