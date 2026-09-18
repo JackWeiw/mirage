@@ -114,3 +114,17 @@ def test_design_synthesis_plan_offline_returns_deterministic(
     assert {"main", "ns_a", "ns_b"}.issubset(mod_names)
     assert len(plan.tasks) >= 2
     assert all(t.status == "pending" for t in plan.tasks)
+
+
+def test_run_synthesis_pipeline_offline_shape(tmp_path: pathlib.Path) -> None:
+    """run_synthesis_pipeline: architect (offline) -> deterministic plan; orchestrator
+    (offline) -> no patch; build attempted. Offline shape == run_modular_pipeline shape
+    (project generated + PipelineResult). Build fails on Windows (no ARM toolchain)."""
+    from config.framework_config import FrameworkConfig
+    from harness.pipeline import Pipeline
+
+    pipeline = Pipeline(output_base_dir=tmp_path / "base", config=FrameworkConfig.defaults())
+    profile = _profile_with_call_tree()
+    result = pipeline.run_synthesis_pipeline(profile, tmp_path / "project")
+    assert (tmp_path / "project" / "CMakeLists.txt").exists()
+    assert isinstance(result, PipelineResult)

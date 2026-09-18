@@ -23,8 +23,10 @@ from agent.adjustment import (
 )
 from agent.agent_core import AgentCore, LLMError
 from agent.architect import ArchitectAgent
+from agent.orchestrator import SynthesisOrchestrator
 from agent.strategy import decide_iteration_priority
 from agent.synthesis_plan import SynthesisPlan
+from agent.synthesizer import SynthesizerAgent
 from codegen.call_tree import SkeletonDescriptor
 from codegen.generator import WorkloadGenerator
 from codegen.module_graph_builder import ModuleGraphBuilder
@@ -246,6 +248,37 @@ class Pipeline:
         logger.info("synthesis_plan_designed", source=plan.source, tasks=len(plan.tasks))
         self.telemetry.end_step("designing_plan", success=True)
         return plan
+
+    def run_synthesis_pipeline(
+        self, customer_profile: Profile, output_dir: pathlib.Path
+    ) -> PipelineResult:
+        """Phase C entry: architect designs a SynthesisPlan, the orchestrator fans out
+        synthesis + assembles, then build. Agent-optional: degrades to the deterministic
+        dual-path (architect + orchestrator both offline) when no LLM is configured.
+        Mirrors run_modular_pipeline but uses the architect + orchestrator path.
+        """
+        try:
+            plan = self.design_synthesis_plan(customer_profile)
+            orchestrator = SynthesisOrchestrator(
+                self.generator, SynthesizerAgent(self.config.agent)
+            )
+            project_dir = orchestrator.synthesize(plan, output_dir)
+            build_result = self.build_workload_result(project_dir)
+            if not build_result.success:
+                return PipelineResult(
+                    success=False,
+                    customer_profile_json=customer_profile.model_dump_json(),
+                    project_dir=str(project_dir),
+                    error=f"build_failed: {build_result.stderr}".rstrip(": "),
+                )
+            return PipelineResult(
+                success=True,
+                customer_profile_json=customer_profile.model_dump_json(),
+                project_dir=str(project_dir),
+            )
+        except Exception as e:
+            logger.error("synthesis_pipeline_failed", error=str(e))
+            return PipelineResult(success=False, error=str(e))
 
     def run_and_compare(
         self,
