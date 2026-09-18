@@ -2,6 +2,7 @@
 
 import os
 import pathlib
+from typing import Any
 
 import pytest
 
@@ -202,3 +203,63 @@ def test_pipeline_run_and_compare_structural_alignment(tmp_path: pathlib.Path) -
     assert "structural_alignment" in report
     assert report["structural_alignment"]["overall_overlap_pct"] == 100.0
     assert report["structural_alignment"]["trunk_present"] is True
+
+
+def test_pipeline_ingest_forwards_topdown_tree_and_summary() -> None:
+    """ingest_customer_data must forward summary + topdown_tree from parse_text.
+
+    The storage seam (spec §6.1): PR #80's parser builds both, but the join at
+    ingest_customer_data dropped them — a customer Profile seen by the agent had
+    only 4 flat L1 percentages. This test pins the forwarding.
+    """
+    data_dir = pathlib.Path(__file__).parent.parent / "data"
+    no_agent = AgentCore(config=AgentConfig(api_key=None))
+    pipeline = Pipeline(
+        output_base_dir=pathlib.Path(__file__).parent.parent.parent / "test_output",
+        agent=no_agent,
+    )
+    profile = pipeline.ingest_customer_data(
+        topdown_path=data_dir / "sample_topdown_tree.txt",
+        customer_name="tree_fwd",
+        metadata={"date": "2026-09-18"},
+    )
+    assert profile.summary is not None
+    assert profile.summary.cycles > 0
+    assert profile.topdown_tree is not None
+    assert len(profile.topdown_tree) > 0
+    # And the saved copy round-trips the tree (ProfileStore path).
+    saved = pipeline.profile_store.load("tree_fwd_profile")
+    assert saved.topdown_tree is not None
+    assert saved.summary is not None
+
+
+def test_pipeline_ingest_populates_call_tree() -> None:
+    """ingest_customer_data must build + persist the faithful call_tree, not
+    just the flat hotspots list (spec §6.2)."""
+    data_dir = pathlib.Path(__file__).parent.parent / "data"
+    no_agent = AgentCore(config=AgentConfig(api_key=None))
+    pipeline = Pipeline(
+        output_base_dir=pathlib.Path(__file__).parent.parent.parent / "test_output",
+        agent=no_agent,
+    )
+    profile = pipeline.ingest_customer_data(
+        flamegraph_path=data_dir / "sample_flamegraph_folded.txt",
+        customer_name="ctree",
+        metadata={"date": "2026-09-18"},
+    )
+    assert profile.call_tree is not None
+    assert len(profile.call_tree) > 0
+    # per-call-site self_samples present on at least one node
+    flat = []
+
+    def walk(n: Any) -> None:
+        flat.append(n)
+        for c in n.children:
+            walk(c)
+
+    for root in profile.call_tree:
+        walk(root)
+    assert any(n.self_samples > 0 for n in flat)
+    # round-trips through the store
+    saved = pipeline.profile_store.load("ctree_profile")
+    assert saved.call_tree is not None

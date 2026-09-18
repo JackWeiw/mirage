@@ -1,11 +1,14 @@
 """Tests for Profile schema validation."""
 
 from profile.profile_schema import (
+    BusinessModel,
+    CallTreeNode,
     HotspotFunction,
     MemoryProfile,
     Profile,
     ProfileMetadata,
     SoftwareDependency,
+    Stage,
     TopdownL1,
     TopdownL2,
     TopdownL2Backend,
@@ -167,3 +170,60 @@ def test_profile_topdown_tree_round_trips_json() -> None:
     assert loaded.topdown_tree is not None
     assert loaded.topdown_tree[0].children[0].children[0].name == "L3 Bound"
     assert loaded.topdown_tree[0].children[0].children[0].value == 30.96
+
+
+def test_call_tree_node_round_trips_json() -> None:
+    root = CallTreeNode(
+        function="main",
+        source="customer_custom",
+        self_pct=0.0,
+        cumulative_pct=100.0,
+        self_samples=0,
+        cumulative_samples=1000,
+        depth=0,
+        children=[
+            CallTreeNode(
+                function="foo",
+                source="open_source",
+                self_pct=40.0,
+                cumulative_pct=60.0,
+                self_samples=400,
+                cumulative_samples=600,
+                depth=1,
+            ),
+        ],
+    )
+    loaded = CallTreeNode.model_validate_json(root.model_dump_json())
+    assert loaded.children[0].function == "foo"
+    assert loaded.children[0].self_samples == 400
+    assert loaded.cumulative_samples == 1000
+
+
+def test_profile_call_tree_and_business_model_default_none() -> None:
+    profile = Profile(metadata=ProfileMetadata(customer="acme", date="2026-09-18"))
+    assert profile.call_tree is None
+    assert profile.business_model is None
+
+
+def test_profile_business_model_round_trips() -> None:
+    bm = BusinessModel(
+        archetype="memory_bound",
+        stages=[
+            Stage(
+                name="scoring",
+                bottleneck="backend_bound.memory_bound.l3_bound",
+                dominant_self_pct=42.0,
+                representative_function="Ranker::score",
+            )
+        ],
+    )
+    profile = Profile(
+        metadata=ProfileMetadata(customer="acme", date="2026-09-18"),
+        business_model=bm,
+    )
+    loaded = Profile.model_validate_json(profile.model_dump_json())
+    assert loaded.business_model is not None
+    assert loaded.business_model.archetype == "memory_bound"
+    assert loaded.business_model.stages[0].name == "scoring"
+    # thread_pools defaults to None (per-thread capture absent — spec §5 limitation).
+    assert loaded.business_model.thread_pools is None

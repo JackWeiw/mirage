@@ -125,6 +125,59 @@ class CallgraphSummary(BaseModel):
     customer_custom_hotspot_pct: float | None = None
 
 
+class CallTreeNode(BaseModel):
+    """One node of the faithful flamegraph call tree (per-call-site).
+
+    Identity is the node's position in the tree (its path), not its function
+    name — the same function called from two distinct parents is two nodes,
+    preserving per-call-site self-time (the field the flat HotspotFunction
+    view loses). `library`/`source` are FunctionClassifier outputs (captured
+    signal); `archetype` is NOT here — it is a derived digest accessor (spec
+    §5/§7) so the profile layer has no codegen import edge.
+    """
+
+    function: str
+    library: str | None = None
+    source: str  # open_source | customer_custom
+    self_pct: float = 0.0  # at THIS call-site
+    cumulative_pct: float = 0.0
+    self_samples: int = 0
+    cumulative_samples: int = 0
+    children: list["CallTreeNode"] = Field(default_factory=list)
+    depth: int = 0
+
+
+CallTreeNode.model_rebuild()
+
+
+class Stage(BaseModel):
+    name: str
+    bottleneck: str  # topdown node path, e.g. backend_bound.memory_bound.l3_bound
+    dominant_self_pct: float
+    representative_function: str | None = None
+
+
+class ThreadPool(BaseModel):
+    name: str
+    functions: list[str] = Field(default_factory=list)
+    self_pct: float = 0.0
+
+
+class BusinessModel(BaseModel):
+    """Customer-level business/archetype descriptor (LLM-assisted, stable across
+    iterations). Extraction is deferred to the synthesis spec (spec §6.3); the
+    foundation adds only the model + field.
+
+    `thread_pools` is None when per-thread flamegraph capture is unavailable —
+    FlamegraphParser merges stacks across threads, so per-thread origin is gone
+    at ingestion (RFC 0001 P2 non-goal for the same reason).
+    """
+
+    archetype: str  # memory_bound | compute_bound | mixed
+    stages: list[Stage] = Field(default_factory=list)
+    thread_pools: list[ThreadPool] | None = None
+
+
 class Profile(BaseModel):
     metadata: ProfileMetadata
     hotspots: list[HotspotFunction] = Field(default_factory=list)
@@ -136,3 +189,5 @@ class Profile(BaseModel):
     optimizations: list[OptimizationRecord] = Field(default_factory=list)
     business_logic: str | None = None
     callgraph_summary: CallgraphSummary | None = None
+    call_tree: list[CallTreeNode] | None = None
+    business_model: BusinessModel | None = None

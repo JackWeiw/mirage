@@ -41,7 +41,7 @@ from observability.iteration_history import (
 from observability.logging import get_logger
 from observability.telemetry import PipelineTelemetry
 from profile.comparator import ProfileComparator
-from profile.profile_schema import Profile, ProfileMetadata
+from profile.profile_schema import CallTreeNode, Profile, ProfileMetadata
 from profile.profile_store import ProfileStore
 from profile.structural_comparator import StructuralComparator
 
@@ -102,9 +102,11 @@ class Pipeline:
         self.telemetry.start_step("ingesting")
 
         hotspots = []
+        call_tree: list[CallTreeNode] | None = None
         if flamegraph_path is not None:
             hotspots = self.flamegraph_parser.parse_folded(flamegraph_path)
-            logger.info("parsed_hotspots", count=len(hotspots))
+            call_tree = self.flamegraph_parser.parse_tree(flamegraph_path)
+            logger.info("parsed_hotspots", count=len(hotspots), call_tree_nodes=len(call_tree))
 
         topdown_profile: Profile | None = None
         if topdown_path is not None:
@@ -125,8 +127,11 @@ class Pipeline:
                 neoverse_core=meta.get("neoverse_core"),
             ),
             hotspots=hotspots,
+            call_tree=call_tree,
             topdown=topdown_profile.topdown if topdown_profile else None,
             topdown_l2=topdown_profile.topdown_l2 if topdown_profile else None,
+            summary=topdown_profile.summary if topdown_profile else None,
+            topdown_tree=topdown_profile.topdown_tree if topdown_profile else None,
             memory=topdown_profile.memory if topdown_profile else None,
             business_logic=meta.get("business_logic"),
         )
