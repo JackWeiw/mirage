@@ -25,6 +25,7 @@ from agent.agent_core import AgentCore, LLMError
 from agent.strategy import decide_iteration_priority
 from codegen.call_tree import SkeletonDescriptor
 from codegen.generator import WorkloadGenerator
+from codegen.module_graph_builder import ModuleGraphBuilder
 from config.framework_config import FrameworkConfig
 from harness.build_runner import BuildRunner
 from harness.config_writer import write_config_json_atomic
@@ -184,6 +185,52 @@ class Pipeline:
         logger.info("workload_generated_from_descriptor", dir=str(project_dir))
         self.telemetry.end_step("generating", success=True)
         return project_dir
+
+    def generate_workload_from_module_graph(
+        self, profile: Profile, output_dir: pathlib.Path
+    ) -> pathlib.Path:
+        """Generate a modular C++ project from a customer Profile's call_tree.
+
+        Phase A (no LLM): builds a ModuleGraph via ModuleGraphBuilder (dual-path:
+        prefers the faithful call_tree, legacy hotspots fallback) and emits it via
+        WorkloadGenerator.generate_from_module_graph.
+        """
+        self.telemetry.start_step("generating_modular")
+        builder = ModuleGraphBuilder()
+        graph = builder.build(profile, project_name=profile.metadata.customer)
+        self.generator.generate_from_module_graph(graph, output_dir)
+        logger.info("workload_generated_from_module_graph", dir=str(output_dir))
+        self.telemetry.end_step("generating_modular", success=True)
+        return output_dir
+
+    def run_modular_pipeline(
+        self,
+        customer_profile: Profile,
+        output_dir: pathlib.Path,
+    ) -> PipelineResult:
+        """Phase A entry: modular codegen from a customer Profile's call_tree.
+
+        No LLM, no instruction. generate_from_module_graph -> build_workload.
+        Mirrors run_full_pipeline but uses the module-graph path.
+        """
+        try:
+            project_dir = self.generate_workload_from_module_graph(customer_profile, output_dir)
+            build_result = self.build_workload_result(project_dir)
+            if not build_result.success:
+                return PipelineResult(
+                    success=False,
+                    customer_profile_json=customer_profile.model_dump_json(),
+                    project_dir=str(project_dir),
+                    error=f"build_failed: {build_result.stderr}".rstrip(": "),
+                )
+            return PipelineResult(
+                success=True,
+                customer_profile_json=customer_profile.model_dump_json(),
+                project_dir=str(project_dir),
+            )
+        except Exception as e:
+            logger.error("modular_pipeline_failed", error=str(e))
+            return PipelineResult(success=False, error=str(e))
 
     def run_and_compare(
         self,
