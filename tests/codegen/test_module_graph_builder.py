@@ -109,6 +109,7 @@ def test_build_from_call_tree_uses_real_archetype_not_hardcoded() -> None:
     )
     assert found is not None
     assert found.self_work.archetype == "hash"
+    assert found.self_work.units == 40
 
 
 def test_build_falls_back_to_legacy_when_call_tree_absent() -> None:
