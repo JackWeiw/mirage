@@ -127,6 +127,8 @@ class Pipeline:
             hotspots=hotspots,
             topdown=topdown_profile.topdown if topdown_profile else None,
             topdown_l2=topdown_profile.topdown_l2 if topdown_profile else None,
+            summary=topdown_profile.summary if topdown_profile else None,
+            topdown_tree=topdown_profile.topdown_tree if topdown_profile else None,
             memory=topdown_profile.memory if topdown_profile else None,
             business_logic=meta.get("business_logic"),
         )
