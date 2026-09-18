@@ -22,7 +22,9 @@ from agent.adjustment import (
     validate_adjustments,
 )
 from agent.agent_core import AgentCore, LLMError
+from agent.architect import ArchitectAgent
 from agent.strategy import decide_iteration_priority
+from agent.synthesis_plan import SynthesisPlan
 from codegen.call_tree import SkeletonDescriptor
 from codegen.generator import WorkloadGenerator
 from codegen.module_graph_builder import ModuleGraphBuilder
@@ -231,6 +233,19 @@ class Pipeline:
         except Exception as e:
             logger.error("modular_pipeline_failed", error=str(e))
             return PipelineResult(success=False, error=str(e))
+
+    def design_synthesis_plan(self, profile: Profile, top_k: int = 20) -> SynthesisPlan:
+        """Phase B entry: the architect designs a SynthesisPlan from the customer
+        Profile. Agent-optional -- degrades to the deterministic base when no LLM is
+        configured (ArchitectAgent with api_key=None -> is_available() False). Mirrors
+        the telemetry pattern of generate_workload_from_module_graph.
+        """
+        self.telemetry.start_step("designing_plan")
+        architect = ArchitectAgent(self.config.agent)
+        plan = architect.design_plan(profile, top_k)
+        logger.info("synthesis_plan_designed", source=plan.source, tasks=len(plan.tasks))
+        self.telemetry.end_step("designing_plan", success=True)
+        return plan
 
     def run_and_compare(
         self,

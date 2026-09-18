@@ -3,10 +3,13 @@ from a customer call_tree."""
 
 from __future__ import annotations
 
-import pathlib  # noqa: TC003
+from typing import TYPE_CHECKING
 
 from models.results import PipelineResult
 from profile.profile_schema import CallTreeNode, Profile, ProfileMetadata
+
+if TYPE_CHECKING:
+    import pathlib
 
 
 def _profile_with_call_tree() -> Profile:
@@ -91,3 +94,23 @@ def test_run_modular_pipeline_ingest_to_build_shape(tmp_path: pathlib.Path) -> N
     # Project was generated regardless of build outcome.
     assert (tmp_path / "project" / "CMakeLists.txt").exists()
     assert isinstance(result, PipelineResult)
+
+
+def test_design_synthesis_plan_offline_returns_deterministic(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Pipeline.design_synthesis_plan wires the ArchitectAgent; offline (no api_key)
+    -> source='deterministic' with one task per function. Uses FrameworkConfig.defaults()
+    (env-free) so the assertion is LLM-path-independent -- unlike Phase A's
+    LLM-agnostic tests which can use bare Pipeline() (from_env)."""
+    from config.framework_config import FrameworkConfig
+    from harness.pipeline import Pipeline
+
+    pipeline = Pipeline(output_base_dir=tmp_path / "base", config=FrameworkConfig.defaults())
+    profile = _profile_with_call_tree()
+    plan = pipeline.design_synthesis_plan(profile)
+    assert plan.source == "deterministic"
+    mod_names = {m.name for m in plan.module_graph.modules}
+    assert {"main", "ns_a", "ns_b"}.issubset(mod_names)
+    assert len(plan.tasks) >= 2
+    assert all(t.status == "pending" for t in plan.tasks)
