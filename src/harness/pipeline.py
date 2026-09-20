@@ -243,7 +243,7 @@ class Pipeline:
         the telemetry pattern of generate_workload_from_module_graph.
         """
         self.telemetry.start_step("designing_plan")
-        architect = ArchitectAgent(self.config.agent)
+        architect = ArchitectAgent(self.config.agent_for_role("architect"))
         plan = architect.design_plan(profile, top_k)
         logger.info("synthesis_plan_designed", source=plan.source, tasks=len(plan.tasks))
         self.telemetry.end_step("designing_plan", success=True)
@@ -260,7 +260,7 @@ class Pipeline:
         try:
             plan = self.design_synthesis_plan(customer_profile)
             orchestrator = SynthesisOrchestrator(
-                self.generator, SynthesizerAgent(self.config.agent)
+                self.generator, SynthesizerAgent(self.config.agent_for_role("synthesizer"))
             )
             project_dir = orchestrator.synthesize(plan, output_dir)
             build_result = self.build_workload_result(project_dir)
@@ -1049,8 +1049,10 @@ class Pipeline:
         """
         cmp_cfg = self.config.comparison
         sens: dict[str, dict[str, Any]] = sensitivity or {}
-        arch = architect or ArchitectAgent(self.config.agent)
-        orchestrator = SynthesisOrchestrator(self.generator, SynthesizerAgent(self.config.agent))
+        arch = architect or ArchitectAgent(self.config.agent_for_role("architect"))
+        orchestrator = SynthesisOrchestrator(
+            self.generator, SynthesizerAgent(self.config.agent_for_role("synthesizer"))
+        )
         out_dir = output_dir or (self.output_base_dir / "synthesis_workload")
 
         if build is None:

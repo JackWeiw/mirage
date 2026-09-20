@@ -6,6 +6,15 @@ framework:
     max_tokens: 4096
     base_url: null
     provider: anthropic
+  # Per-role overrides (Phase E1); unset -> fall back to `agent` above. Set via
+  # yaml here or MIRAGE_AGENT_ARCHITECT_* / _SYNTHESIZER_* env. The architect
+  # needs a strong reasoning model + high max_tokens for the JSON SynthesisPlan;
+  # the synthesizer a fast model for per-module bodies.
+  # architect_agent:
+  #   model: glm-4.7
+  #   max_tokens: 16384
+  # synthesizer_agent:
+  #   model: qwen-fast
   comparison:
     topdown_threshold_pct: 10.0
     memory_threshold_pct: 5.0
