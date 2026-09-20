@@ -101,6 +101,18 @@ _AGENT_ENVS = (
     "MIRAGE_AGENT_PROVIDER",
     "MIRAGE_AGENT_MODEL",
     "MIRAGE_AGENT_MAX_TOKENS",
+    # Per-role overrides (Phase E1) -- cleared alongside the generic set so
+    # role tests start from a clean slate.
+    "MIRAGE_AGENT_ARCHITECT_API_KEY",
+    "MIRAGE_AGENT_ARCHITECT_BASE_URL",
+    "MIRAGE_AGENT_ARCHITECT_PROVIDER",
+    "MIRAGE_AGENT_ARCHITECT_MODEL",
+    "MIRAGE_AGENT_ARCHITECT_MAX_TOKENS",
+    "MIRAGE_AGENT_SYNTHESIZER_API_KEY",
+    "MIRAGE_AGENT_SYNTHESIZER_BASE_URL",
+    "MIRAGE_AGENT_SYNTHESIZER_PROVIDER",
+    "MIRAGE_AGENT_SYNTHESIZER_MODEL",
+    "MIRAGE_AGENT_SYNTHESIZER_MAX_TOKENS",
 )
 
 
@@ -186,3 +198,86 @@ def test_from_env_env_overrides_yaml_config(
     assert fw.agent.base_url == "https://gw.yaml.example"
     assert fw.agent.provider == "anthropic"
     assert fw.agent.model == "claude-opus-5"
+
+
+def test_agent_for_role_falls_back_to_agent_when_unset() -> None:
+    """Unset role overrides -> agent_for_role returns the generic agent
+    (agent-optional: a single-model deployment changes nothing)."""
+    config = FrameworkConfig.defaults()
+    assert config.architect_agent is None
+    assert config.synthesizer_agent is None
+    assert config.agent_for_role("architect") is config.agent
+    assert config.agent_for_role("synthesizer") is config.agent
+    assert config.agent_for_role("unknown_role") is config.agent
+
+
+def test_agent_for_role_returns_role_override_when_set() -> None:
+    """A role override set on the config wins over the generic agent."""
+    config = FrameworkConfig.defaults()
+    arch = AgentConfig(model="glm-4.7", max_tokens=16384, api_key="k")
+    config.architect_agent = arch
+    assert config.agent_for_role("architect") is arch
+    # synthesizer still unset -> falls back
+    assert config.agent_for_role("synthesizer") is config.agent
+
+
+def test_from_env_applies_role_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MIRAGE_AGENT_ARCHITECT_* override only the architect role; the
+    synthesizer (unset) still falls back to the generic agent."""
+    _clear_agent_envs(monkeypatch)
+    monkeypatch.setenv("MIRAGE_AGENT_ARCHITECT_MODEL", "glm-4.7")
+    monkeypatch.setenv("MIRAGE_AGENT_ARCHITECT_MAX_TOKENS", "16384")
+    monkeypatch.setenv("MIRAGE_AGENT_ARCHITECT_API_KEY", "sk-arch")
+    fw = FrameworkConfig.from_env()
+    assert fw.architect_agent is not None
+    assert fw.architect_agent.model == "glm-4.7"
+    assert fw.architect_agent.max_tokens == 16384
+    assert fw.architect_agent.api_key == "sk-arch"
+    # synthesizer unset -> falls back to the generic agent
+    assert fw.synthesizer_agent is None
+    assert fw.agent_for_role("synthesizer") is fw.agent
+
+
+def test_from_env_role_max_tokens_parsed_as_int(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Role max_tokens env parses as int (mirrors the generic path)."""
+    _clear_agent_envs(monkeypatch)
+    monkeypatch.setenv("MIRAGE_AGENT_SYNTHESIZER_MODEL", "qwen-fast")
+    monkeypatch.setenv("MIRAGE_AGENT_SYNTHESIZER_MAX_TOKENS", "8192")
+    fw = FrameworkConfig.from_env()
+    assert fw.synthesizer_agent is not None
+    assert fw.synthesizer_agent.model == "qwen-fast"
+    assert fw.synthesizer_agent.max_tokens == 8192
+
+
+def test_from_env_role_rejects_non_int_max_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A non-integer role max_tokens fails loud at load time."""
+    _clear_agent_envs(monkeypatch)
+    monkeypatch.setenv("MIRAGE_AGENT_ARCHITECT_MAX_TOKENS", "big")
+    with pytest.raises(ValueError):
+        FrameworkConfig.from_env()
+
+
+def test_from_env_role_rejects_invalid_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An invalid role provider fails loud (AgentConfig.__init__ re-runs the
+    provider field_validator, so a bad MIRAGE_AGENT_ARCHITECT_PROVIDER can't
+    silently route to the wrong client shape)."""
+    _clear_agent_envs(monkeypatch)
+    monkeypatch.setenv("MIRAGE_AGENT_ARCHITECT_PROVIDER", "gemini")
+    with pytest.raises(ValueError):
+        FrameworkConfig.from_env()
+
+
+def test_from_env_role_inherits_generic_for_unset_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When a role env sets only some fields, the rest inherit from the
+    generic agent (which carries MIRAGE_AGENT_*). So the architect gets the
+    generic base_url/provider + the role-specific model -- a single-model
+    deployment only sets the generic env, a per-role split adds role env."""
+    _clear_agent_envs(monkeypatch)
+    monkeypatch.setenv("MIRAGE_AGENT_BASE_URL", "https://gw.example.com")
+    monkeypatch.setenv("MIRAGE_AGENT_PROVIDER", "openai")
+    monkeypatch.setenv("MIRAGE_AGENT_ARCHITECT_MODEL", "glm-4.7")
+    fw = FrameworkConfig.from_env()
+    assert fw.architect_agent is not None
+    assert fw.architect_agent.model == "glm-4.7"  # role env
+    assert fw.architect_agent.base_url == "https://gw.example.com"  # inherited
+    assert fw.architect_agent.provider == "openai"  # inherited

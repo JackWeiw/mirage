@@ -90,6 +90,13 @@ class FrameworkConfig(BaseModel):
     log_level: str = "INFO"
     json_logging: bool = False
     agent: AgentConfig = Field(default_factory=AgentConfig)
+    # Per-role overrides for the synthesis pipeline (Phase E1). None -> fall back
+    # to the generic `agent` via agent_for_role(). The architect needs a strong
+    # reasoning model + high max_tokens for the JSON SynthesisPlan; the
+    # synthesizer a fast model for per-module bodies. Set via yaml
+    # (architect_agent: {...}) or MIRAGE_AGENT_ARCHITECT_* / _SYNTHESIZER_* env.
+    architect_agent: AgentConfig | None = None
+    synthesizer_agent: AgentConfig | None = None
     comparison: ComparisonConfig = Field(default_factory=ComparisonConfig)
     run_defaults: RunDefaults = Field(default_factory=RunDefaults)
     codegen: CodegenConfig = Field(default_factory=CodegenConfig)
@@ -108,6 +115,19 @@ class FrameworkConfig(BaseModel):
         """Return default configuration."""
         defaults_path = pathlib.Path(__file__).parent / "default_config.yaml"
         return cls.from_yaml(defaults_path)
+
+    def agent_for_role(self, role: str) -> AgentConfig:
+        """Return the per-role AgentConfig, falling back to the generic
+        ``agent`` when the role override is unset (agent-optional: an
+        unconfigured role changes nothing -- it shares the generic agent).
+        Used by the synthesis pipeline so the architect + synthesizer can run
+        different models/max_tokens from a single deployment.
+        """
+        if role == "architect":
+            return self.architect_agent or self.agent
+        if role == "synthesizer":
+            return self.synthesizer_agent or self.agent
+        return self.agent
 
     @classmethod
     def from_env(cls, config_path: pathlib.Path | None = None) -> "FrameworkConfig":
@@ -147,4 +167,28 @@ class FrameworkConfig(BaseModel):
                 base_url=overrides.get("base_url", fw.agent.base_url),
                 provider=overrides.get("provider", fw.agent.provider),
             )
+        # Per-role overrides (Phase E1): MIRAGE_AGENT_ARCHITECT_* /
+        # _SYNTHESIZER_*. Only applied when set; an unset role falls back to
+        # the generic agent above (which already carries MIRAGE_AGENT_*), so a
+        # single-model deployment needs only the generic env. Unset fields in
+        # a role env inherit from the generic agent (base = role_cfg or agent).
+        for role in ("architect", "synthesizer"):
+            role_overrides: dict[str, str] = {}
+            for field_name, env_name in _AGENT_ENV_MAP.items():
+                role_env = env_name.replace("MIRAGE_AGENT_", f"MIRAGE_AGENT_{role.upper()}_", 1)
+                if os.environ.get(role_env) is not None:
+                    role_overrides[field_name] = os.environ[role_env]
+            if role_overrides:
+                base = getattr(fw, f"{role}_agent") or fw.agent
+                setattr(
+                    fw,
+                    f"{role}_agent",
+                    AgentConfig(
+                        model=role_overrides.get("model", base.model),
+                        max_tokens=int(role_overrides.get("max_tokens", base.max_tokens)),
+                        api_key=role_overrides.get("api_key", base.api_key),
+                        base_url=role_overrides.get("base_url", base.base_url),
+                        provider=role_overrides.get("provider", base.provider),
+                    ),
+                )
         return fw
