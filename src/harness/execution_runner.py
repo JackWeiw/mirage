@@ -1,6 +1,7 @@
 """Execution Runner — run workload binary with warmup and measurement phases."""
 
 import subprocess
+import time
 
 from harness.run_config import RunConfig
 from models.results import ExecutionResult
@@ -36,6 +37,7 @@ class ExecutionRunner:
         cmd = [binary_path, run_config.config_path]
 
         logger.info("running_workload", cmd=cmd, timeout=total_timeout)
+        start = time.monotonic()
 
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=total_timeout)
@@ -44,12 +46,21 @@ class ExecutionRunner:
                 stdout=result.stdout,
                 stderr=result.stderr,
                 exit_code=result.returncode,
+                duration_seconds=time.monotonic() - start,
             )
         except subprocess.TimeoutExpired:
             logger.error("workload_timeout", timeout=total_timeout)
-            return ExecutionResult(success=False, stderr=f"Timeout after {total_timeout}s")
+            return ExecutionResult(
+                success=False,
+                stderr=f"Timeout after {total_timeout}s",
+                duration_seconds=time.monotonic() - start,
+            )
         except FileNotFoundError:
-            return ExecutionResult(success=False, stderr=f"Binary not found: {binary_path}")
+            return ExecutionResult(
+                success=False,
+                stderr=f"Binary not found: {binary_path}",
+                duration_seconds=time.monotonic() - start,
+            )
 
     def validate_run(self, binary_path: str, timeout: int = 5) -> ExecutionResult:
         """Short validation run to check if the binary can start.
@@ -62,6 +73,7 @@ class ExecutionRunner:
             ExecutionResult from the short run.
         """
         cmd = [binary_path]
+        start = time.monotonic()
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
             return ExecutionResult(
@@ -69,9 +81,18 @@ class ExecutionRunner:
                 stdout=result.stdout,
                 stderr=result.stderr,
                 exit_code=result.returncode,
+                duration_seconds=time.monotonic() - start,
             )
         except subprocess.TimeoutExpired:
             # Binary started but didn't finish in timeout — OK for validation
-            return ExecutionResult(success=True, stdout="(timeout — binary started)")
+            return ExecutionResult(
+                success=True,
+                stdout="(timeout — binary started)",
+                duration_seconds=time.monotonic() - start,
+            )
         except FileNotFoundError:
-            return ExecutionResult(success=False, stderr=f"Binary not found: {binary_path}")
+            return ExecutionResult(
+                success=False,
+                stderr=f"Binary not found: {binary_path}",
+                duration_seconds=time.monotonic() - start,
+            )
