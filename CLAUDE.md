@@ -210,9 +210,8 @@ Edit `ComparisonConfig` in `src/config/default_config.yaml` (or `FrameworkConfig
 
 1. **`examples/` outside CI scope** — pre-commit still lints it, but CI does not run its tests.
 2. **`ExecutionResult.duration_seconds` declared-but-unset** (separate from the resolved `BuildResult.duration_seconds`).
-3. **Generated binary post-measurement non-exit** — threadpool cleanup keeps the process alive after the measurement window (codegen-level fix, flagged not started).
-4. **config.json path consistency** — codegen writes `scaffold/config.json`, collect reads `build/config.json`, `config_loader` falls back to baked defaults → runtime knob adjustments may not reach the binary (flagged not started).
-5. **Two deeper follow-ups await user confirmation**: (a) generated-binary non-exit; (b) config.json path consistency.
+3. **Generated binary post-measurement non-exit** — threadpool cleanup keeps the process alive after the measurement window (codegen-level fix, flagged not started; deeper follow-up awaiting user confirmation).
+4. **config.json path consistency** — codegen writes `<project>/config.json` but the binary reads `<project>/build/config.json` (`run_and_collect` sets pdir = binary.parent = build/); the iter-1 seed config was missed (`config_loader` fell back to baked defaults). Fix landed: `build_workload_result` copies the seed config to `build/config.json` after a successful build (covers seed + structural rebuild + synthesis — the single chokepoint all builds route through); the runtime-tier rewrite already targets `build/config.json` for iter 2+. Awaits real-ARM validation (E3).
 
 ## Related Documentation
 

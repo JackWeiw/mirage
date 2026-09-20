@@ -11,6 +11,7 @@ run-failure-streak / build-failure-streak / degraded-stall.
 
 import math
 import pathlib
+import shutil
 import subprocess
 import time
 from collections.abc import Callable
@@ -326,6 +327,13 @@ class Pipeline:
         else:
             logger.info("build_succeeded", binary=result.binary_path)
             self.telemetry.end_step("building", success=True)
+            # Issue #4: codegen writes <project>/config.json but the binary reads
+            # <project>/build/config.json (run_and_collect sets pdir=binary.parent
+            # = build/). Copy the seed config so iter 1 isn't stuck on baked
+            # defaults; the runtime rewrite already hits build/ for iter 2+.
+            src_cfg = project_dir / "config.json"
+            if src_cfg.is_file() and result.binary_path:
+                shutil.copy(src_cfg, pathlib.Path(result.binary_path).parent / "config.json")
         return result
 
     def build_workload(self, project_dir: pathlib.Path) -> str | None:
