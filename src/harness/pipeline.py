@@ -22,9 +22,14 @@ from agent.adjustment import (
     validate_adjustments,
 )
 from agent.agent_core import AgentCore, LLMError
+from agent.architect import ArchitectAgent
+from agent.orchestrator import SynthesisOrchestrator
 from agent.strategy import decide_iteration_priority
+from agent.synthesis_plan import SynthesisPlan
+from agent.synthesizer import SynthesizerAgent
 from codegen.call_tree import SkeletonDescriptor
 from codegen.generator import WorkloadGenerator
+from codegen.module_graph_builder import ModuleGraphBuilder
 from config.framework_config import FrameworkConfig
 from harness.build_runner import BuildRunner
 from harness.config_writer import write_config_json_atomic
@@ -184,6 +189,96 @@ class Pipeline:
         logger.info("workload_generated_from_descriptor", dir=str(project_dir))
         self.telemetry.end_step("generating", success=True)
         return project_dir
+
+    def generate_workload_from_module_graph(
+        self, profile: Profile, output_dir: pathlib.Path
+    ) -> pathlib.Path:
+        """Generate a modular C++ project from a customer Profile's call_tree.
+
+        Phase A (no LLM): builds a ModuleGraph via ModuleGraphBuilder (dual-path:
+        prefers the faithful call_tree, legacy hotspots fallback) and emits it via
+        WorkloadGenerator.generate_from_module_graph.
+        """
+        self.telemetry.start_step("generating_modular")
+        builder = ModuleGraphBuilder()
+        graph = builder.build(profile, project_name=profile.metadata.customer)
+        self.generator.generate_from_module_graph(graph, output_dir)
+        logger.info("workload_generated_from_module_graph", dir=str(output_dir))
+        self.telemetry.end_step("generating_modular", success=True)
+        return output_dir
+
+    def run_modular_pipeline(
+        self,
+        customer_profile: Profile,
+        output_dir: pathlib.Path,
+    ) -> PipelineResult:
+        """Phase A entry: modular codegen from a customer Profile's call_tree.
+
+        No LLM, no instruction. generate_from_module_graph -> build_workload.
+        Mirrors run_full_pipeline but uses the module-graph path.
+        """
+        try:
+            project_dir = self.generate_workload_from_module_graph(customer_profile, output_dir)
+            build_result = self.build_workload_result(project_dir)
+            if not build_result.success:
+                return PipelineResult(
+                    success=False,
+                    customer_profile_json=customer_profile.model_dump_json(),
+                    project_dir=str(project_dir),
+                    error=f"build_failed: {build_result.stderr}".rstrip(": "),
+                )
+            return PipelineResult(
+                success=True,
+                customer_profile_json=customer_profile.model_dump_json(),
+                project_dir=str(project_dir),
+            )
+        except Exception as e:
+            logger.error("modular_pipeline_failed", error=str(e))
+            return PipelineResult(success=False, error=str(e))
+
+    def design_synthesis_plan(self, profile: Profile, top_k: int = 20) -> SynthesisPlan:
+        """Phase B entry: the architect designs a SynthesisPlan from the customer
+        Profile. Agent-optional -- degrades to the deterministic base when no LLM is
+        configured (ArchitectAgent with api_key=None -> is_available() False). Mirrors
+        the telemetry pattern of generate_workload_from_module_graph.
+        """
+        self.telemetry.start_step("designing_plan")
+        architect = ArchitectAgent(self.config.agent)
+        plan = architect.design_plan(profile, top_k)
+        logger.info("synthesis_plan_designed", source=plan.source, tasks=len(plan.tasks))
+        self.telemetry.end_step("designing_plan", success=True)
+        return plan
+
+    def run_synthesis_pipeline(
+        self, customer_profile: Profile, output_dir: pathlib.Path
+    ) -> PipelineResult:
+        """Phase C entry: architect designs a SynthesisPlan, the orchestrator fans out
+        synthesis + assembles, then build. Agent-optional: degrades to the deterministic
+        dual-path (architect + orchestrator both offline) when no LLM is configured.
+        Mirrors run_modular_pipeline but uses the architect + orchestrator path.
+        """
+        try:
+            plan = self.design_synthesis_plan(customer_profile)
+            orchestrator = SynthesisOrchestrator(
+                self.generator, SynthesizerAgent(self.config.agent)
+            )
+            project_dir = orchestrator.synthesize(plan, output_dir)
+            build_result = self.build_workload_result(project_dir)
+            if not build_result.success:
+                return PipelineResult(
+                    success=False,
+                    customer_profile_json=customer_profile.model_dump_json(),
+                    project_dir=str(project_dir),
+                    error=f"build_failed: {build_result.stderr}".rstrip(": "),
+                )
+            return PipelineResult(
+                success=True,
+                customer_profile_json=customer_profile.model_dump_json(),
+                project_dir=str(project_dir),
+            )
+        except Exception as e:
+            logger.error("synthesis_pipeline_failed", error=str(e))
+            return PipelineResult(success=False, error=str(e))
 
     def run_and_compare(
         self,
@@ -915,6 +1010,282 @@ class Pipeline:
             # Degraded-mode: runtime tier exhausted (all runtime knobs
             # skip-blocked or boundary-exhausted).  deterministic_revise
             # returned [] during this iteration's candidate generation.
+            if (
+                history.degraded
+                and runtime_candidates_empty
+                and any(
+                    not v.get("within_threshold", True)
+                    for v in report.get("topdown_l1", {}).values()
+                )
+            ):
+                stop_reason = "runtime_tier_exhausted_agent_unavailable"
+                break
+
+        return self._loop_result(history, stop_reason)
+
+    def run_synthesis_iteration_loop(
+        self,
+        customer_profile: Profile,
+        seed_plan: SynthesisPlan | None = None,
+        sensitivity: dict[str, dict[str, Any]] | None = None,
+        max_iter: int = 10,
+        collect: (Callable[[str, SynthesisPlan], Profile | RunFailure] | None) = None,
+        build: Callable[[SynthesisPlan], BuildResult] | None = None,
+        output_dir: pathlib.Path | None = None,
+        architect: ArchitectAgent | None = None,
+    ) -> PipelineResult:
+        """Phase D entry: plan-centric two-tier auto-iteration loop over a
+        SynthesisPlan. Mirrors run_iteration_loop but the structural tier is
+        surgical re-synthesis (architect.revise_plan clears targeted modules'
+        cached bodies -> orchestrator re-synthesizes only them + rebuilds)
+        instead of knob gating; the runtime tier reuses the deterministic
+        config-knob path via a {"config": plan.module_graph.config} wrapper
+        (no rebuild).
+
+        Agent-optional: degrades to runtime-tier-only when no LLM is configured.
+        Reuses _make_record / _applied_moves / _attribute_observed_effects /
+        _loop_result + decide_iteration_priority. ``architect`` is injectable
+        for stub-driven tests (default: a fresh ArchitectAgent from config).
+        """
+        cmp_cfg = self.config.comparison
+        sens: dict[str, dict[str, Any]] = sensitivity or {}
+        arch = architect or ArchitectAgent(self.config.agent)
+        orchestrator = SynthesisOrchestrator(self.generator, SynthesizerAgent(self.config.agent))
+        out_dir = output_dir or (self.output_base_dir / "synthesis_workload")
+
+        if build is None:
+
+            def _build_plan(plan: SynthesisPlan) -> BuildResult:
+                project_dir = orchestrator.synthesize(plan, out_dir)
+                return self.build_workload_result(project_dir)
+
+            build_fn: Callable[[SynthesisPlan], BuildResult] = _build_plan
+        else:
+            build_fn = build
+
+        if collect is None:
+
+            def _default_collect(binary: str, plan: SynthesisPlan) -> Profile | RunFailure:
+                pdir = pathlib.Path(binary).parent
+                cfg: dict[str, Any] = plan.module_graph.config
+                ws = cfg.get("warmup_seconds", self.config.run_defaults.warmup_seconds)
+                ms = cfg.get("measurement_seconds", self.config.run_defaults.measurement_seconds)
+                return self.run_and_collect(binary, pdir, ws, ms)
+
+            collect_fn: Callable[[str, SynthesisPlan], Profile | RunFailure] = _default_collect
+        else:
+            collect_fn = collect
+
+        # --- Plan acquisition ---
+        agent_available = arch.is_available()
+        plan: SynthesisPlan | None
+        if agent_available and seed_plan is None:
+            plan = arch.design_plan(customer_profile)
+        else:
+            plan = seed_plan
+        if plan is None:
+            return PipelineResult(
+                success=False, error="no_plan_available", stop_reason="no_instruction"
+            )
+
+        # --- Seed build (must compile; no recovery) ---
+        seed_build = build_fn(plan)
+        if not seed_build.success:
+            return PipelineResult(
+                success=False,
+                error=f"seed_build_failed: {seed_build.stderr}".rstrip(": "),
+                stop_reason="seed_build_failed",
+            )
+        binary: str | None = seed_build.binary_path
+        if binary is None:
+            return PipelineResult(
+                success=False,
+                error="seed_build_failed: no binary path",
+                stop_reason="seed_build_failed",
+            )
+
+        # --- Loop state ---
+        history = IterationHistory(customer_name=customer_profile.metadata.customer)
+        self.history = history
+        run_fail_streak = 0
+        build_fail_streak = 0
+        pending_build_fix = False
+        last_report: dict[str, Any] | None = None
+        prev_record: IterationRecord | None = None
+        stop_reason = "max_iter"
+
+        for i in range(max_iter):
+            agent_avail_now = arch.is_available()
+            runtime_cfg: dict[str, Any] = {"config": plan.module_graph.config}
+
+            # ---- Collect phase ----
+            if pending_build_fix:
+                # The last structural rebuild did not compile. Don't run the
+                # (dead) binary; revise straight from the last good report so
+                # the architect can self-correct from the compiler stderr now
+                # in history.
+                report = last_report
+                if agent_avail_now:
+                    pending_build_fix = False
+                else:
+                    history.add_record(
+                        IterationRecord(iteration=i, converged=False, build_failed=True)
+                    )
+                    build_fail_streak += 1
+                    if build_fail_streak >= cmp_cfg.build_failure_stop:
+                        stop_reason = "build_failure_streak"
+                        break
+                    continue
+            else:
+                assert binary is not None
+                collect_result = collect_fn(binary, plan)
+                if isinstance(collect_result, RunFailure):
+                    run_fail_streak += 1
+                    history.add_record(
+                        IterationRecord(
+                            iteration=i,
+                            converged=False,
+                            failed=True,
+                            failure_reason=collect_result.reason,
+                        )
+                    )
+                    if run_fail_streak >= cmp_cfg.run_failure_stop:
+                        stop_reason = "run_failure_streak"
+                        break
+                    continue
+                run_fail_streak = 0
+                report = self.comparator.compare(customer_profile, collect_result, iteration=i)
+
+            if report is None:
+                stop_reason = "no_report_available"
+                break
+
+            # ---- Priority + tier ----
+            priority = decide_iteration_priority(report, config=cmp_cfg)
+            if priority == 0:
+                record = self._make_record(i, report, priority, [])
+                history.add_record(record)
+                if prev_record is not None and last_report is not None:
+                    self._attribute_observed_effects(prev_record, last_report, report)
+                stop_reason = "converged"
+                break
+            tier = "runtime" if priority == 1 else "structural"
+
+            # ---- Candidate generation ----
+            runtime_candidates_empty = False
+            _revised_plan: SynthesisPlan | None = None
+            cand: list[dict[str, Any]]
+            if priority == 1:
+                cand = deterministic_revise(
+                    runtime_cfg,
+                    report,
+                    sens,
+                    history,
+                    oscillation_window=cmp_cfg.oscillation_window,
+                    topdown_threshold_pct=cmp_cfg.topdown_threshold_pct,
+                )
+                runtime_candidates_empty = len(cand) == 0
+            elif agent_avail_now:
+                try:
+                    _revised_plan, cand = arch.revise_plan(plan, report, sens, history)
+                except LLMError as exc:
+                    logger.warning(
+                        "structural_llm_failed_degrade iter=%d kind=%s err=%s",
+                        i,
+                        type(exc).__name__,
+                        exc,
+                    )
+                    history.degraded = True
+                    tier = "runtime"
+                    cand = deterministic_revise(
+                        runtime_cfg,
+                        report,
+                        sens,
+                        history,
+                        oscillation_window=cmp_cfg.oscillation_window,
+                        topdown_threshold_pct=cmp_cfg.topdown_threshold_pct,
+                    )
+                    runtime_candidates_empty = len(cand) == 0
+            else:
+                history.degraded = True
+                tier = "runtime"
+                cand = deterministic_revise(
+                    runtime_cfg,
+                    report,
+                    sens,
+                    history,
+                    oscillation_window=cmp_cfg.oscillation_window,
+                    topdown_threshold_pct=cmp_cfg.topdown_threshold_pct,
+                )
+                runtime_candidates_empty = len(cand) == 0
+
+            # ---- Apply ----
+            build_failed_this_iter = False
+            if _revised_plan is not None:
+                # Structural tier: rebuild from the revised plan -- the
+                # orchestrator re-synthesizes only cache-miss (cleared)
+                # modules, then rebuilds. No gate (revise_plan targets
+                # modules, not knobs).
+                record = self._make_record(i, report, priority, cand, [])
+                plan = _revised_plan
+                new_res = build_fn(plan)
+                if not new_res.success:
+                    build_fail_streak += 1
+                    record.build_failed = True
+                    record.build_stderr = new_res.stderr
+                    build_failed_this_iter = True
+                    pending_build_fix = True
+                else:
+                    binary = new_res.binary_path
+                    build_fail_streak = 0
+            else:
+                accepted, rejected = validate_adjustments(
+                    cand,
+                    runtime_cfg,
+                    report,
+                    sens,
+                    tier,
+                    topdown_threshold_pct=cmp_cfg.topdown_threshold_pct,
+                )
+                if rejected:
+                    logger.info(
+                        "adjustments_rejected",
+                        iteration=i,
+                        count=len(rejected),
+                        reasons=[r.get("reason") for r in rejected],
+                    )
+                applied = self._applied_moves(accepted, runtime_cfg, tier) if accepted else []
+                record = self._make_record(i, report, priority, accepted, applied)
+                if accepted:
+                    new_cfg = apply_adjustments(runtime_cfg, accepted)["config"]
+                    plan.module_graph.config = new_cfg
+                    assert binary is not None
+                    project_dir = pathlib.Path(binary).parent
+                    config_path = project_dir / "config.json"
+                    if project_dir.is_dir():
+                        try:
+                            write_config_json_atomic(config_path, new_cfg)
+                        except OSError as exc:
+                            logger.warning("config_write_failed", error=str(exc))
+
+            history.add_record(record)
+            if prev_record is not None and last_report is not None:
+                self._attribute_observed_effects(prev_record, last_report, report)
+            prev_record = record
+            last_report = report
+
+            # ---- Termination checks ----
+            if build_failed_this_iter:
+                if build_fail_streak >= cmp_cfg.build_failure_stop:
+                    stop_reason = "build_failure_streak"
+                    break
+                continue
+            if history.is_oscillating(cmp_cfg.oscillation_window):
+                stop_reason = "oscillation"
+                break
+            if history.no_improvement_for(cmp_cfg.no_improvement_stop):
+                stop_reason = "no_improvement_stop"
+                break
             if (
                 history.degraded
                 and runtime_candidates_empty

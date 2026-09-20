@@ -148,35 +148,41 @@ class ModuleGraphBuilder:
         return graph
 
     def _fail_on_name_collision(self, graph: ModuleGraph) -> None:
-        """Two distinct namespaces can share a last segment (``foo::store`` and
-        ``bar::store`` both collapse to ``store``), which would silently drop a
-        module from codegen (same output filename). P1 fails loud; P2 will
-        disambiguate names instead.
-        """
-        names = [m.name for m in graph.modules]
-        dupes = {n for n in names if names.count(n) > 1}
-        if dupes:
-            raise ValueError(
-                f"module name collision (ambiguous last namespace segment, "
-                f"needs P2 disambiguation): {sorted(dupes)}"
-            )
+        fail_on_name_collision(graph)
 
     def _fail_on_cycle(self, graph: ModuleGraph) -> None:
-        by_name = {m.name: m for m in graph.modules}
-        color: dict[str, str] = {}
+        fail_on_cycle(graph)
 
-        def dfs(node: str) -> None:
-            color[node] = "gray"
-            for dep in by_name.get(node, ModuleDescriptor(name="", namespace="")).depends_on:
-                if color.get(dep) == "gray":
-                    raise ValueError(f"module dependency cycle at {node} -> {dep}")
-                if dep not in color:
-                    dfs(dep)
-            color[node] = "black"
 
-        for name in by_name:
-            if name not in color:
-                dfs(name)
+def fail_on_name_collision(graph: ModuleGraph) -> None:
+    """Two distinct namespaces sharing a last segment would silently drop a
+    module from codegen (same output filename). Fail loud."""
+    names = [m.name for m in graph.modules]
+    dupes = {n for n in names if names.count(n) > 1}
+    if dupes:
+        raise ValueError(
+            f"module name collision (ambiguous last namespace segment, "
+            f"needs P2 disambiguation): {sorted(dupes)}"
+        )
+
+
+def fail_on_cycle(graph: ModuleGraph) -> None:
+    """Reject a module dependency graph with a cycle (not buildable)."""
+    by_name = {m.name: m for m in graph.modules}
+    color: dict[str, str] = {}
+
+    def dfs(node: str) -> None:
+        color[node] = "gray"
+        for dep in by_name.get(node, ModuleDescriptor(name="", namespace="")).depends_on:
+            if color.get(dep) == "gray":
+                raise ValueError(f"module dependency cycle at {node} -> {dep}")
+            if dep not in color:
+                dfs(dep)
+        color[node] = "black"
+
+    for name in by_name:
+        if name not in color:
+            dfs(name)
 
 
 def _module_name(namespace: str) -> str:
